@@ -1,3 +1,4 @@
+import os
 import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -5,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
+from PIL import Image
 
 from ..config import HotSettings, WatermarkConfig
 from ..db.models import Library, MediaFile
@@ -54,6 +56,12 @@ if TYPE_CHECKING:
     from ..net.http import WebClient
 
 logger = structlog.get_logger()
+
+# 整理时保留视频源目录里"原来就有"的图片 / 预告片, 让它们跟随视频进整理目录,
+# 刮削下载的图只补缺. 设为 0/false/off 可完全退回原版「无条件用刮削图覆盖」行为.
+_KEEP_LOCAL_ARTIFACTS = os.getenv("AMANE_ORGANIZE_KEEP_LOCAL_ARTIFACTS", "1").strip().lower() not in {
+    "0", "false", "no", "off"
+}
 
 
 @dataclass
@@ -119,6 +127,7 @@ async def execute_file_operations(
             file_info=file_info,
             content_type=metadata.content_type,
             watermark_dir=watermark_dir,
+            preserve_existing=_KEEP_LOCAL_ARTIFACTS,
         )
 
     # 发现字幕: 必须在视频移动前检查同目录.
@@ -161,6 +170,14 @@ async def execute_file_operations(
     # 写入 NFO.
     if org_result.outcome is PlaceOutcome.PLACED and org_result.dest and write_nfo:
         await write_nfo_file(metadata, paths.nfo)
+
+    # 整理落盘后, 把视频源目录里"原来就有"的图片 / 预告片带进整理目录, 并覆盖本次刮削图.
+    # 源目录与图片目标目录相同时 (文件已就位), copy_existing_artifacts 自行跳过, 原图由
+    # preserve_existing 保住; 整理失败不写附属文件, 不留孤儿.
+    if org_result.outcome is PlaceOutcome.PLACED and _KEEP_LOCAL_ARTIFACTS:
+        kept = await copy_existing_artifacts(source_path, paths)
+        if kept:
+            logger.info("local artifacts kept", number=metadata.number, files=[p.name for p in kept])
 
     # 字幕按模板落到 video_dest 侧.
     subtitle_conflicts: list[SubtitleConflict] = []
@@ -317,6 +334,110 @@ def _copy_into_library(src: Path, dst: Path) -> None:
             logger.debug("copy metadata skipped", src=str(src), dst=str(dst), error=str(exc))
 
 
+# 视频源目录里"原来就有"的媒体服务器附属资产. 键为角色, 值为候选文件名 (不含扩展名),
+# 按优先级排列; {stem} 会替换成视频文件名. 只扫描源目录第一层, 不递归.
+_LOCAL_IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".jfif")
+_LOCAL_IMAGE_NAMES: dict[str, tuple[str, ...]] = {
+    "poster": ("poster", "folder", "cover", "front", "movie", "{stem}-poster", "{stem}"),
+    "fanart": ("fanart", "backdrop", "background", "{stem}-fanart"),
+    "thumb": ("thumb", "landscape", "{stem}-thumb"),
+}
+_LOCAL_TRAILER_NAMES = ("trailer", "{stem}-trailer", "preview")
+_LOCAL_EXTRAFANART_DIRS = ("extrafanart", "extrathumbs")
+
+
+def _same_path(a: Path, b: Path) -> bool:
+    """路径身份比较: 绝对化 + NFC, 不解析符号链接 (网盘 / 挂载点解析可能失败)."""
+    left = nfc_path(os.path.normpath(os.path.abspath(a)))
+    right = nfc_path(os.path.normpath(os.path.abspath(b)))
+    return left == right
+
+
+def _first_local_artifact(
+    entries: dict[str, Path], names: Sequence[str], suffixes: Sequence[str], stem: str
+) -> Path | None:
+    for name in names:
+        key = name.replace("{stem}", stem)
+        for suffix in suffixes:
+            hit = entries.get((key + suffix).lower())
+            if hit is not None:
+                return hit
+    return None
+
+
+def _copy_local_image(src: Path, dst: Path) -> bool:
+    """把本地图片按目标文件名落盘; 非 JPEG 统一转 JPEG, 保持媒体服务器可读."""
+    try:
+        if _same_path(src, dst):
+            return False  # 源就是目标, 不自我覆盖
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if src.suffix.lower() in {".jpg", ".jpeg"}:
+            _copy_into_library(src, dst)
+        else:
+            with Image.open(src) as im:
+                im.convert("RGB").save(dst, "JPEG", quality=95)
+        return True
+    except Exception as exc:  # noqa: BLE001 - 单个附属文件失败不影响整理
+        logger.warning("local artifact copy failed", src=str(src), dst=str(dst), error=str(exc))
+        return False
+
+
+@in_thread
+def copy_existing_artifacts(source: Path, paths: ResolvedPaths) -> list[Path]:
+    """把视频源目录里已有的封面 / 背景 / 剧照 / 预告片复制到整理目标目录.
+
+    - 目标已有同名文件时由源目录的图覆盖: 用户已有资产优先于本次刮削下载的图.
+    - 源目录与图片目标目录相同 (文件已就位 / TargetState.SAME) 时整体跳过, 避免自拷贝;
+      这些图留在原地即已生效, 由 preserve_existing 阻止刮削图覆盖.
+    - 返回本次成功写入的路径; 单文件失败只记日志, 不阻断整理.
+    """
+    src_dir = source.parent
+    dst_dir = paths.poster.parent
+    written: list[Path] = []
+    try:
+        if _same_path(src_dir, dst_dir):
+            return written
+        entries = {p.name.lower(): p for p in src_dir.iterdir() if p.is_file()}
+    except OSError as exc:
+        logger.warning("local artifact scan failed", dir=str(src_dir), error=str(exc))
+        return written
+
+    stem = source.stem
+    targets = {"poster": paths.poster, "fanart": paths.fanart, "thumb": paths.thumb}
+    for role, names in _LOCAL_IMAGE_NAMES.items():
+        hit = _first_local_artifact(entries, names, _LOCAL_IMAGE_SUFFIXES, stem)
+        if hit is not None and _copy_local_image(hit, targets[role]):
+            written.append(targets[role])
+
+    trailer = _first_local_artifact(entries, _LOCAL_TRAILER_NAMES, (".mp4",), stem)
+    if trailer is not None:
+        try:
+            if not _same_path(trailer, paths.trailer):
+                paths.trailer.parent.mkdir(parents=True, exist_ok=True)
+                _copy_into_library(trailer, paths.trailer)
+                written.append(paths.trailer)
+        except OSError as exc:
+            logger.warning("local trailer copy failed", src=str(trailer), error=str(exc))
+
+    for dirname in _LOCAL_EXTRAFANART_DIRS:
+        extra_dir = src_dir / dirname
+        try:
+            if not extra_dir.is_dir() or _same_path(extra_dir, paths.extrafanart_dir):
+                continue
+            images = sorted(
+                (p for p in extra_dir.iterdir() if p.is_file() and p.suffix.lower() in _LOCAL_IMAGE_SUFFIXES),
+                key=lambda p: p.name,
+            )
+        except OSError as exc:
+            logger.warning("local extrafanart scan failed", dir=str(extra_dir), error=str(exc))
+            continue
+        for img in images:
+            target = paths.extrafanart_dir / (img.stem + ".jpg")
+            if _copy_local_image(img, target):
+                written.append(target)
+    return written
+
+
 @in_thread
 def _place_library_images(
     paths: ResolvedPaths,
@@ -331,20 +452,35 @@ def _place_library_images(
     content_type: ContentType,
     watermark_dir: Path | None,
     watermarks: bool = True,
+    preserve_existing: bool = False,
 ) -> None:
-    # 复制封面 / 海报 / 预告片 / extrafanart 到库路径, 不判断目标上是否已有产物.
-    # fanart 没有刮削来源, 内容取 thumb, 随 thumb 一同重写.
-    if thumb_local is not None and DownloadableResource.thumb in kinds:
-        paths.thumb.parent.mkdir(parents=True, exist_ok=True)
-        _copy_into_library(thumb_local, paths.thumb)
-        paths.fanart.parent.mkdir(parents=True, exist_ok=True)
-        _copy_into_library(thumb_local, paths.fanart)
+    # 复制封面 / 海报 / 预告片 / extrafanart 到库路径.
+    # preserve_existing=True 时目标上已有产物 (含视频源目录带过来的原图) 一律保留,
+    # 刮削下载的图只补缺; 同步写盘链路不传此参数, 保持覆盖写回.
+    def _free(dst: Path) -> bool:
+        return not (preserve_existing and dst.exists())
 
-    if DownloadableResource.poster in kinds:
+    written: set[Path] = set()
+    if thumb_local is not None and DownloadableResource.thumb in kinds:
+        # fanart 没有刮削来源, 内容取 thumb, 随 thumb 一同重写.
+        for target in (paths.thumb, paths.fanart):
+            if not _free(target):
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _copy_into_library(thumb_local, target)
+            written.add(target)
+
+    if DownloadableResource.poster in kinds and _free(paths.poster):
         if poster_local is not None:
             paths.poster.parent.mkdir(parents=True, exist_ok=True)
             _copy_into_library(poster_local, paths.poster)
-        elif thumb_local is not None and config is not None and config.scraping.crop_poster:
+            written.add(paths.poster)
+        elif (
+            thumb_local is not None
+            and config is not None
+            and config.scraping.crop_poster
+            and paths.thumb.exists()
+        ):
             paths.poster.parent.mkdir(parents=True, exist_ok=True)
             crop_poster(
                 paths.thumb,
@@ -352,40 +488,35 @@ def _place_library_images(
                 poster_ratio=config.scraping.poster_ratio,
                 jpeg_quality=config.scraping.jpeg_quality,
             )
+            written.add(paths.poster)
 
-    if trailer_local is not None and DownloadableResource.trailer in kinds:
+    if trailer_local is not None and DownloadableResource.trailer in kinds and _free(paths.trailer):
         paths.trailer.parent.mkdir(parents=True, exist_ok=True)
         _copy_into_library(trailer_local, paths.trailer)
 
     if extrafanart and DownloadableResource.extrafanart in kinds:
         paths.extrafanart_dir.mkdir(parents=True, exist_ok=True)
         for i, p in enumerate(extrafanart):
-            _copy_into_library(p, paths.extrafanart_dir / f"{i + 1}.jpg")
+            target = paths.extrafanart_dir / f"{i + 1}.jpg"
+            if not _free(target):
+                continue
+            _copy_into_library(p, target)
 
-    # 叠加水印 (thumb / poster). 同步写盘传 watermarks=False, 避免对未重拷的旧图反复叠加.
+    # 叠加水印: 只作用于本次实际写入的图, 保留下来的原图不重复叠加.
     wm = config.watermark if config is not None else WatermarkConfig()
     if watermarks and wm.enabled and file_info is not None:
         jpeg_quality = config.scraping.jpeg_quality if config is not None else 95
-        if paths.thumb.exists():
-            apply_cover_watermarks_from_info(
-                paths.thumb,
-                file_info,
-                content_type,
-                jpeg_quality=jpeg_quality,
-                watermark_dir=watermark_dir,
-                scale=wm.scale,
-                corners=wm.corners,
-            )
-        if paths.poster.exists():
-            apply_cover_watermarks_from_info(
-                paths.poster,
-                file_info,
-                content_type,
-                jpeg_quality=jpeg_quality,
-                watermark_dir=watermark_dir,
-                scale=wm.scale,
-                corners=wm.corners,
-            )
+        for target in (paths.thumb, paths.poster):
+            if target in written and target.exists():
+                apply_cover_watermarks_from_info(
+                    target,
+                    file_info,
+                    content_type,
+                    jpeg_quality=jpeg_quality,
+                    watermark_dir=watermark_dir,
+                    scale=wm.scale,
+                    corners=wm.corners,
+                )
 
 
 async def _download_images_via_store(
@@ -399,8 +530,12 @@ async def _download_images_via_store(
     content_type: ContentType,
     watermark_dir: Path | None = None,
     watermarks: bool = True,
+    preserve_existing: bool = False,
 ) -> None:
-    """优先用 Resource 已有文件; 缺失则现场 acquire."""
+    """优先用 Resource 已有文件; 缺失则现场 acquire.
+
+    ``preserve_existing`` 供整理链路使用: 目标上已有的本地图不被刮削图覆盖.
+    """
     thumb_local = None
     if DownloadableResource.thumb in kinds:
         thumb_urls = metadata.thumb_urls
@@ -435,6 +570,7 @@ async def _download_images_via_store(
         content_type=content_type,
         watermark_dir=watermark_dir,
         watermarks=watermarks,
+        preserve_existing=preserve_existing,
     )
 
 
