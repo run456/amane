@@ -1,4 +1,9 @@
 {
+  "library": {
+    "all": "全部媒体库",
+    "label": "媒体库",
+    "empty": "暂无媒体库"
+  },
   "semantic": {
     "toggle": "语义",
     "back": "返回",

@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import io
 from collections.abc import Sequence
@@ -5,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 import structlog
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from PIL import Image, ImageOps
 from pydantic import TypeAdapter
 
@@ -17,7 +18,14 @@ from ...db.repos.media import file_phase_of
 from ...handlers import ScrapePayload
 from ...handlers.file import ArtifactSyncResult, write_metadata_artifacts
 from ...media import manual_crop_image
+from ...media.artifact_proxy import image_response, local_video_response, proxy_remote_trailer
 from ...media.lara import LaraClient, LaraError
+from ...media.local_artifacts import (
+    LocalArtifactKind,
+    LocalArtifacts,
+    discover,
+    pick_proxyable_trailer,
+)
 from ...media.resource_store import RESOURCE_URL_PREFIX
 from ...parsing import FilePhaseSummary as ParsedFilePhase
 from ...parsing import summarize_file_phases
@@ -49,6 +57,7 @@ from ..models import (
     UserTagResponse,
     to_media_file_response,
 )
+from ..support.local_artifacts import inject_local_artifacts
 from ..support.metadata_filters import MetadataFilters, parse_metadata_filters, require_known_definition
 from .saved_queries import resolve_saved_query_id_subquery
 
@@ -98,7 +107,7 @@ async def build_metadata_responses(repo: RepoDep, items: Sequence[Metadata]) -> 
                 }
             )
         responses.append(response)
-    return responses
+    return await inject_local_artifacts(repo, responses, items)
 
 
 def _file_phase_resp(summary: ParsedFilePhase) -> FilePhaseSummary:
@@ -169,6 +178,7 @@ async def list_metadata(
         definition=definition,
         content_type=filters.content_type,
         id_subquery_sql=id_subquery_sql,
+        library_id=filters.library_id,
     )
     return MetadataListResponse(items=await build_metadata_responses(repo, items), total=total)
 
@@ -209,6 +219,7 @@ async def _semantic_list(
             definition=definition,
             content_type=filters.content_type,
             id_subquery_sql=id_subquery_sql,
+            library_id=filters.library_id,
         )
     kind = None if semantic_kind == "all" else EmbeddingKind(semantic_kind)
     try:
@@ -320,6 +331,44 @@ async def merge_metadata_entries(req: MetadataMergeEntriesRequest, repo: RepoDep
     return to_resp(MetadataResponse, metadata)
 
 
+@router.get("/{metadata_id}/artifact")
+@router.head("/{metadata_id}/artifact")
+async def get_metadata_artifact(
+    metadata_id: int,
+    request: Request,
+    repo: RepoDep,
+    kind: Annotated[LocalArtifactKind, Query(description="产物类型")] = LocalArtifactKind.poster,
+) -> Response:
+    """视频同目录的本地图片 / 预告片直出; 没有本地预告片时把远程直链走服务端代理.
+
+    按当前 ``MediaFile.path`` 实时定位, 不写数据库、不需要重扫: 整理后文件挪了位置也自动跟随.
+    响应层把同源 URL 插到各 URL 列表首位, 浏览器只请求本服务, 绕开外站 CORS / 防盗链.
+    """
+    metadata = await repo.get_metadata(metadata_id)
+    if metadata is None:
+        raise HTTPException(status_code=404, detail="影片不存在")
+
+    paths = await repo.first_media_paths([metadata_id])
+    art = LocalArtifacts(files={})
+    video_path = paths.get(metadata_id)
+    if video_path is not None:
+        art = await asyncio.to_thread(discover, Path(video_path), number=metadata.number)
+
+    if kind is LocalArtifactKind.trailer:
+        local = art.files.get(kind)
+        if local is not None:
+            return local_video_response(request, local)
+        remote = pick_proxyable_trailer(metadata.trailer_urls)
+        if remote is not None:
+            return await proxy_remote_trailer(request, remote)
+        raise HTTPException(status_code=404, detail="无可播放的预告片")
+
+    local = art.files.get(kind)
+    if local is None:
+        raise HTTPException(status_code=404, detail="本地图片不存在")
+    return image_response(local)
+
+
 @router.get("/{metadata_id}")
 async def get_metadata(metadata_id: int, repo: RepoDep) -> MetadataDetailResponse:
     metadata = await repo.get_metadata(metadata_id)
@@ -338,15 +387,18 @@ async def get_metadata(metadata_id: int, repo: RepoDep) -> MetadataDetailRespons
         publisher_id,
         series_id,
     ) = await repo.resolve_metadata_facet_ids(metadata)
+    metadata_response = to_resp(MetadataResponse, metadata).model_copy(
+        update={
+            "file_count": len(files),
+            "file_phase": _file_phase_resp(
+                summarize_file_phases((file_phase_of(f) for f in files), metadata.content_type)
+            ),
+        }
+    )
+    # 详情页与列表页同一套本地产物注入: 本地封面优先, 本地 trailer.mp4 优先可播.
+    (metadata_response,) = await inject_local_artifacts(repo, [metadata_response], [metadata])
     return MetadataDetailResponse(
-        metadata=to_resp(MetadataResponse, metadata).model_copy(
-            update={
-                "file_count": len(files),
-                "file_phase": _file_phase_resp(
-                    summarize_file_phases((file_phase_of(f) for f in files), metadata.content_type)
-                ),
-            }
-        ),
+        metadata=metadata_response,
         files=[to_media_file_response(f, metadata.content_type) for f in files],
         user_tags=[to_resp(UserTagResponse, t) for t in user_tags],
         comments=[to_resp(CommentResponse, c) for c in comments],

@@ -283,3 +283,23 @@ class MediaRepoMixin(RepositoryMixinBase):
             stmt = select(MediaFile).where(MediaFile.metadata_id == metadata_id).order_by(col(MediaFile.id))
             result = await session.exec(stmt)
             return list(result.all())
+
+    async def first_media_paths(self, metadata_ids: Sequence[int]) -> dict[int, str]:
+        """批量取每个条目按 id 升序的第一条文件路径, 供响应层定位同目录的本地封面/预告片.
+
+        一次查询替代列表页的 N 次往返; 无文件的条目不出现在结果里.
+        """
+        unique = list(dict.fromkeys(metadata_ids))
+        if not unique:
+            return {}
+        async with self._session() as session:
+            stmt = (
+                select(MediaFile.metadata_id, MediaFile.path)
+                .where(col(MediaFile.metadata_id).in_(unique))
+                .order_by(col(MediaFile.id))
+            )
+            found: dict[int, str] = {}
+            for metadata_id, path in (await session.exec(stmt)).all():
+                if metadata_id is not None and metadata_id not in found:
+                    found[metadata_id] = path
+            return found

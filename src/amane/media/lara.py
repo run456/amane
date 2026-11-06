@@ -22,7 +22,7 @@ import httpx2 as httpx
 from ..config.manager import LaraConfig
 
 SDK_NAME = "amane"
-SDK_VERSION = "0.26.2"
+SDK_VERSION = "0.26.3"
 _AUTH_PATH = "/v2/auth"
 _TRANSLATE_PATH = "/v2/translate"
 _MAX_DETAIL = 200

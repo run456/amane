@@ -5,6 +5,7 @@ import {
   Button,
   Group,
   SegmentedControl,
+  Select,
   Text,
   TextInput,
   Title,
@@ -24,6 +25,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   getFacetOptions,
+  listLibrariesOptions,
   listMetadataInfiniteOptions,
   listMetadataOptions,
   semanticStatusOptions,
@@ -152,6 +154,19 @@ function MetaIndexPage() {
   const listLimit = useUIStore((s) => s.pageSizes.metaList);
   const narrowViewport = useNarrowViewport("md");
 
+  // 媒体库下拉: 与筛选条件并列, 但属于「看哪个库」的视图状态, 值写进 URL 以便刷新/分享保留.
+  const { data: libraries } = useQuery(listLibrariesOptions());
+  const libraryOptions = useMemo(
+    () => [
+      { value: "all", label: t("library.all") },
+      ...(libraries?.items ?? []).map((lib) => ({
+        value: String(lib.id),
+        label: lib.name || lib.path,
+      })),
+    ],
+    [libraries, t],
+  );
+
   const hasFiles = parseHasFiles(search.has_files);
   const vr = parseHasFiles(search.vr);
   const filePhase: FilePhaseFilters = {
@@ -191,6 +206,7 @@ function MetaIndexPage() {
     content_type: filePhase.content_type ?? undefined,
     ...filters,
     ...(search.saved_query_id != null ? { saved_query_id: search.saved_query_id } : {}),
+    library_id: search.library_id,
   };
 
   const semanticParams: NonNullable<ListMetadataData["query"]> =
@@ -403,7 +419,31 @@ function MetaIndexPage() {
       // 搜索槽内另有语义切换按钮, 放宽到 560, 使输入框宽度接近其他页面的 480
       searchMaxWidth={560}
       title={<Title order={2}>{t("common:nav.meta")}</Title>}
-      actions={<ListDefaultActions update={{ key: "meta", value: metaListDefaults(search) }} />}
+      actions={
+        <Group gap="sm" wrap="nowrap">
+          <Select
+            size="sm"
+            w={190}
+            aria-label={t("library.label")}
+            placeholder={t("library.all")}
+            data={libraryOptions}
+            value={search.library_id == null ? "all" : String(search.library_id)}
+            onChange={(value) => {
+              void navigate({
+                search: (prev) => ({
+                  ...prev,
+                  library_id: value && value !== "all" ? Number(value) : undefined,
+                  page: 1,
+                }),
+              });
+            }}
+            allowDeselect={false}
+            clearable={false}
+            comboboxProps={{ withinPortal: !narrowViewport }}
+          />
+          <ListDefaultActions update={{ key: "meta", value: metaListDefaults(search) }} />
+        </Group>
+      }
       viewSwitch={
         <SegmentedControl
           value={search.view}

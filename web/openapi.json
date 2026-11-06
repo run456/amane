@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Amane API",
-    "version": "0.25.0"
+    "version": "0.26.3"
   },
   "paths": {
     "/api/health": {
@@ -1267,6 +1267,25 @@
               "title": "Saved Query Id"
             },
             "description": "Saved query preset id; AND with other filters via SQL subquery"
+          },
+          {
+            "name": "library_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Saved query preset id; AND with other filters via SQL subquery",
+              "title": "Library Id"
+            },
+            "description": "Filter by media library id (via linked MediaFile)"
           }
         ],
         "responses": {

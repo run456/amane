@@ -24,6 +24,8 @@ export const metaListDefaultsSchema = metaSearchSchema.omit({
   q: true,
   page: true,
   saved_query_id: true,
+  // 媒体库切换是当前页的视图状态, 不应被「设为侧栏默认」记下来.
+  library_id: true,
 });
 export const actorListDefaultsSchema = actorsBrowseSearchSchema.omit({
   q: true,

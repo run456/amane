@@ -1,4 +1,9 @@
 {
+  "library": {
+    "all": "All libraries",
+    "label": "Library",
+    "empty": "No libraries"
+  },
   "semantic": {
     "toggle": "Semantic",
     "back": "Back",

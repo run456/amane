@@ -107,6 +107,9 @@ function formatRuntime(minutes?: number | null): string | null {
  * 直接播放的地址交给 hls.js (经 XHR 取分片, 需要上游允许跨源), 漏判在 Android 与 iOS 上仍由内核原生播放.
  */
 function trailerKind(url: string): "video" | "hls" {
+  // 同源产物端点 (本地 trailer.mp4 / 服务端代理的远程直链) 一律是可拖动直链,
+  // 不是 HLS 播放列表; 相对路径在 new URL 里也解析不出 pathname.
+  if (url.startsWith("/api/metadata/")) return "video";
   try {
     return new URL(url).pathname.toLowerCase().endsWith(".m3u8") ? "hls" : "video";
   } catch {

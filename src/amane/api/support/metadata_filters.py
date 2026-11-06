@@ -28,6 +28,8 @@ class MetadataFilters:
     definition: str | None = None
     content_type: ContentType | None = None
     saved_query_id: int | None = None
+    library_id: int | None = None
+    """按媒体库筛选; 库归属只存在 MediaFile.library_id, 需经关联子查询命中."""
 
     @property
     def active(self) -> bool:
@@ -49,6 +51,7 @@ class MetadataFilters:
                 self.definition is not None,
                 self.content_type is not None,
                 self.saved_query_id is not None,
+                self.library_id is not None,
             )
         )
 
@@ -73,6 +76,9 @@ async def parse_metadata_filters(
     saved_query_id: Annotated[
         int | None, Query(description="Saved query preset id; AND with other filters via SQL subquery")
     ] = None,
+    library_id: Annotated[
+        int | None, Query(ge=1, description="Filter by media library id (via linked MediaFile)")
+    ] = None,
 ) -> MetadataFilters:
     return MetadataFilters(
         actor_id=actor_id,
@@ -90,6 +96,7 @@ async def parse_metadata_filters(
         definition=definition,
         content_type=content_type,
         saved_query_id=saved_query_id,
+        library_id=library_id,
     )
 
 

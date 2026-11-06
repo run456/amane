@@ -75,6 +75,8 @@ export const metaSearchSchema = z.object({
   definition: z.enum(FILE_DEFINITIONS).optional(),
   content_type: z.enum(CONTENT_TYPES).optional(),
   saved_query_id: z.coerce.number().int().positive().optional(),
+  /** 片库按媒体库筛选; 缺省 = 全部. 值进 URL, 刷新与分享都不丢. */
+  library_id: z.coerce.number().int().positive().optional(),
 });
 
 export type MetaSearch = z.infer<typeof metaSearchSchema>;

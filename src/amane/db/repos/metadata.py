@@ -156,6 +156,7 @@ class MetadataRepoMixin(RepositoryMixinBase):
         ids: Sequence[int] | None = None,
         id_subquery_sql: str | None = None,
         updated_before: datetime | None = None,
+        library_id: int | None = None,
     ) -> list[ColumnElement[bool]] | None:
         """列表与候选集共用的 WHERE 条件; ``None`` 表示条件互斥, 结果必为空."""
         conditions: list[ColumnElement[bool]] = []
@@ -206,6 +207,10 @@ class MetadataRepoMixin(RepositoryMixinBase):
             conditions.append(col(Metadata.series).in_(series_names))
         if has_files is not None:
             conditions.append(_metadata_has_files_clause(has_files=has_files))
+        if library_id is not None:
+            # 库归属只存在 MediaFile.library_id: 只要有一条关联文件属于该库即命中,
+            # 与 has_subtitle / mosaic 等相位筛选共用同一套 exists() 语义.
+            conditions.append(_metadata_linked_file_exists(col(MediaFile.library_id) == library_id))
         if vr is True:
             conditions.append(metadata_vr_predicate())
         elif vr is False:
@@ -251,6 +256,7 @@ class MetadataRepoMixin(RepositoryMixinBase):
         ids: Sequence[int] | None = None,
         id_subquery_sql: str | None = None,
         updated_before: datetime | None = None,
+        library_id: int | None = None,
     ) -> tuple[list[Metadata], int]:
         """关联类 facet 同 kind 多 id 为 AND; 标量类同 kind 多 id 为 OR (未知 id 忽略, 全部未知则空).
         跨 kind 始终 AND. 相位筛选项: 布尔 True=至少一份具备, False=没有任何一份具备.
@@ -276,6 +282,7 @@ class MetadataRepoMixin(RepositoryMixinBase):
                 ids=ids,
                 id_subquery_sql=id_subquery_sql,
                 updated_before=updated_before,
+                library_id=library_id,
             )
             if conditions is None:
                 return [], 0
@@ -314,6 +321,7 @@ class MetadataRepoMixin(RepositoryMixinBase):
         ids: Sequence[int] | None = None,
         id_subquery_sql: str | None = None,
         updated_before: datetime | None = None,
+        library_id: int | None = None,
     ) -> list[int]:
         """与 :meth:`list_metadata` 同一套筛选, 只取 id; 供语义检索先收窄候选集."""
         async with self._session() as session:
@@ -337,6 +345,7 @@ class MetadataRepoMixin(RepositoryMixinBase):
                 ids=ids,
                 id_subquery_sql=id_subquery_sql,
                 updated_before=updated_before,
+                library_id=library_id,
             )
             if conditions is None:
                 return []

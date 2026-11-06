@@ -6342,6 +6342,12 @@ export type ListMetadataData = {
          * Saved query preset id; AND with other filters via SQL subquery
          */
         saved_query_id?: number | null;
+        /**
+         * Library Id
+         *
+         * Filter by media library id (via linked MediaFile)
+         */
+        library_id?: number | null;
     };
     url: '/api/metadata';
 };
