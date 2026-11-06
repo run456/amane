@@ -64,14 +64,21 @@ class LocalArtifacts:
 
 
 def _candidate_names(kind: LocalArtifactKind, stems: Sequence[str]) -> list[str]:
-    """先目录级、后影片名前缀; 前缀名再补几个常见别名."""
-    names = list(_BASE_NAMES[kind])
+    """先影片名前缀、后目录级.
+
+    用户整理好的资料库普遍用 ``<片名>-poster.jpg`` 这类前缀名, 而 Amane 写盘 / 刮削
+    只会产出目录级 ``poster.jpg`` / ``thumb.jpg`` / ``fanart.jpg``. 两者同时存在时以前缀名
+    为准, 否则刮削图会顶掉用户原图 (v0.26.4 整理修复). 裸 ``<片名>.jpg`` 最容易误伤,
+    放到最后兜底. 本函数同时被响应层与整理搬运复用, 保证「显示」与「复制」取同一张图.
+    """
+    names: list[str] = []
     for stem in stems:
         names.append(f"{stem}{_PREFIX_SUFFIX[kind]}")
-        if kind is LocalArtifactKind.poster:
-            names.append(stem)  # <片名>.jpg 也常作封面
         if kind is LocalArtifactKind.trailer:
             names.append(f"{stem}-preview")
+    names.extend(_BASE_NAMES[kind])
+    if kind is LocalArtifactKind.poster:
+        names.extend(stems)  # <片名>.jpg 也常作封面
     return names
 
 

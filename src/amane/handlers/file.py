@@ -16,6 +16,7 @@ from ..library import MEDIA_EXTENSIONS, LibraryFileKind, LibraryScan, ancestor_d
 from ..library.rules import is_in_trash
 from ..media import ResourceStore, apply_cover_watermarks_from_info, crop_poster
 from ..media import write_nfo as write_nfo_file
+from ..media.local_artifacts import LocalArtifactKind, LocalArtifacts, discover as discover_local_artifacts
 from ..media.resource_store import internal_url_hash
 from ..net.http import WebClient
 from ..observability.models import OrganizeConflict, OrganizeConflictReason
@@ -57,8 +58,9 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
-# 整理时保留视频源目录里"原来就有"的图片 / 预告片, 让它们跟随视频进整理目录,
-# 刮削下载的图只补缺. 设为 0/false/off 可完全退回原版「无条件用刮削图覆盖」行为.
+# 整理时保留视频源目录里"原来就有"的图片 / 预告片, 让它们跟随视频进整理目录.
+# 命中本地产物的角色完全跳过刮削下载 (而非先写刮削图再覆盖), 避免留下错图.
+# 设为 0/false/off 可完全退回原版「无条件用刮削图覆盖」行为.
 _KEEP_LOCAL_ARTIFACTS = os.getenv("AMANE_ORGANIZE_KEEP_LOCAL_ARTIFACTS", "1").strip().lower() not in {
     "0", "false", "no", "off"
 }
@@ -113,10 +115,18 @@ async def execute_file_operations(
         logger.warning("organize target state unknown", source=str(source_path), dest=str(dest), error=check.error)
         return FileOperationsResult(outcome=PlaceOutcome.FAILED, error=check.error)
 
+    # 整理开始前先用与片库 / 详情页完全相同的规则发现源目录的本地产物.
+    # 命中哪些角色就把哪些角色的刮削资源从下载清单剔除: 刮削图根本不落盘, 也不触发
+    # crop_poster 从横幅裁封面, 从源头杜绝「识别到 A、复制了 B」.
+    local_artifacts: LocalArtifacts = LocalArtifacts(files={})
+    if _KEEP_LOCAL_ARTIFACTS:
+        local_artifacts = await _discover_for_organize(source_path, metadata.number)
+
     # 下载图片; 水印打在库路径副本上, 不能修改 Resource 原图.
     if web_client and download_images:
         logger.debug("downloading images via store", number=metadata.number)
         kinds = set(copy_resources) if copy_resources is not None else set(DownloadableResource)
+        kinds -= _resources_covered_by_local(local_artifacts)
         await _download_images_via_store(
             metadata,
             resource_store,
@@ -171,11 +181,11 @@ async def execute_file_operations(
     if org_result.outcome is PlaceOutcome.PLACED and org_result.dest and write_nfo:
         await write_nfo_file(metadata, paths.nfo)
 
-    # 整理落盘后, 把视频源目录里"原来就有"的图片 / 预告片带进整理目录, 并覆盖本次刮削图.
-    # 源目录与图片目标目录相同时 (文件已就位), copy_existing_artifacts 自行跳过, 原图由
-    # preserve_existing 保住; 整理失败不写附属文件, 不留孤儿.
+    # 整理落盘后, 把视频源目录里"原来就有"的图片 / 预告片按库模板目标名写进整理目录.
+    # 命中本地产物的角色已在下载阶段剔除, 这里只负责搬运 (逐文件, 不再整目录跳过);
+    # 整理失败不写附属文件, 不留孤儿.
     if org_result.outcome is PlaceOutcome.PLACED and _KEEP_LOCAL_ARTIFACTS:
-        kept = await copy_existing_artifacts(source_path, paths)
+        kept = await copy_existing_artifacts(source_path, paths, local_artifacts)
         if kept:
             logger.info("local artifacts kept", number=metadata.number, files=[p.name for p in kept])
 
@@ -334,15 +344,10 @@ def _copy_into_library(src: Path, dst: Path) -> None:
             logger.debug("copy metadata skipped", src=str(src), dst=str(dst), error=str(exc))
 
 
-# 视频源目录里"原来就有"的媒体服务器附属资产. 键为角色, 值为候选文件名 (不含扩展名),
-# 按优先级排列; {stem} 会替换成视频文件名. 只扫描源目录第一层, 不递归.
+# extrafanart / extrathumbs 子目录里的剧照仍按原有逻辑搬运; 封面 / 背景 / 缩略图 / 预告片
+# 的发现已统一交给 media.local_artifacts.discover(), 不再维护第二套命名表, 避免
+# 「片库显示 A、整理复制 B」.
 _LOCAL_IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".jfif")
-_LOCAL_IMAGE_NAMES: dict[str, tuple[str, ...]] = {
-    "poster": ("poster", "folder", "cover", "front", "movie", "{stem}-poster", "{stem}"),
-    "fanart": ("fanart", "backdrop", "background", "{stem}-fanart"),
-    "thumb": ("thumb", "landscape", "{stem}-thumb"),
-}
-_LOCAL_TRAILER_NAMES = ("trailer", "{stem}-trailer", "preview")
 _LOCAL_EXTRAFANART_DIRS = ("extrafanart", "extrathumbs")
 
 
@@ -351,18 +356,6 @@ def _same_path(a: Path, b: Path) -> bool:
     left = nfc_path(os.path.normpath(os.path.abspath(a)))
     right = nfc_path(os.path.normpath(os.path.abspath(b)))
     return left == right
-
-
-def _first_local_artifact(
-    entries: dict[str, Path], names: Sequence[str], suffixes: Sequence[str], stem: str
-) -> Path | None:
-    for name in names:
-        key = name.replace("{stem}", stem)
-        for suffix in suffixes:
-            hit = entries.get((key + suffix).lower())
-            if hit is not None:
-                return hit
-    return None
 
 
 def _copy_local_image(src: Path, dst: Path) -> bool:
@@ -383,41 +376,77 @@ def _copy_local_image(src: Path, dst: Path) -> bool:
 
 
 @in_thread
-def copy_existing_artifacts(source: Path, paths: ResolvedPaths) -> list[Path]:
-    """把视频源目录里已有的封面 / 背景 / 剧照 / 预告片复制到整理目标目录.
+def _discover_for_organize(source: Path, number: str | None) -> LocalArtifacts:
+    """整理开始前用与片库 / 详情页完全相同的规则发现源目录本地产物."""
+    return discover_local_artifacts(source, number=number)
 
-    - 目标已有同名文件时由源目录的图覆盖: 用户已有资产优先于本次刮削下载的图.
-    - 源目录与图片目标目录相同 (文件已就位 / TargetState.SAME) 时整体跳过, 避免自拷贝;
-      这些图留在原地即已生效, 由 preserve_existing 阻止刮削图覆盖.
+
+def _resources_covered_by_local(art: LocalArtifacts) -> set[DownloadableResource]:
+    """本地已有产物的角色不再下载刮削图 (用户确认「完全跳过刮削图」).
+
+    fanart 没有独立刮削源: 原版由 thumb_local 同时写 thumb 与 fanart, 所以本地只要有
+    thumb 或 fanart 任一, 就整体剔除 thumb; 搬运时两者互为后备, 目标不会出现混搭.
+    """
+    covered: set[DownloadableResource] = set()
+    if art.has(LocalArtifactKind.poster):
+        covered.add(DownloadableResource.poster)
+    if art.has(LocalArtifactKind.thumb) or art.has(LocalArtifactKind.fanart):
+        covered.add(DownloadableResource.thumb)
+    if art.has(LocalArtifactKind.trailer):
+        covered.add(DownloadableResource.trailer)
+    return covered
+
+
+@in_thread
+def copy_existing_artifacts(
+    source: Path, paths: ResolvedPaths, artifacts: LocalArtifacts | None = None
+) -> list[Path]:
+    """把源目录"原来就有"的封面 / 背景 / 缩略图 / 预告片写进整理目标目录.
+
+    - 发现规则直接复用 ``media.local_artifacts.discover()`` (与片库 / 详情页显示同源),
+      保证「识别到的封面」与「复制到目标文件夹的封面」是同一张图.
+    - 只按库模板渲染的一套目标名 (``paths.poster`` / ``thumb`` / ``fanart`` / ``trailer``)
+      落盘, 不额外写 ``<片名>-poster.jpg`` 之类第二套命名.
+    - 逐文件判断而非整目录跳过: 原地整理 (只写 strm) 时源 / 目标同目录, 仍需把
+      ``<片名>-poster.jpg`` 复制成模板要求的 ``poster.jpg``.
+    - thumb 与 fanart 互为后备: 原版刮削本就是同一张图写两处, 本地只有其一时也补齐
+      另一处, 避免目标目录出现「本地图 + 刮削图」混搭.
     - 返回本次成功写入的路径; 单文件失败只记日志, 不阻断整理.
     """
+    art = artifacts if artifacts is not None else discover_local_artifacts(source)
     src_dir = source.parent
-    dst_dir = paths.poster.parent
+    files = dict(art.files)
+    thumb_src = files.get(LocalArtifactKind.thumb) or files.get(LocalArtifactKind.fanart)
+    fanart_src = files.get(LocalArtifactKind.fanart) or files.get(LocalArtifactKind.thumb)
+    targets = {
+        LocalArtifactKind.poster: paths.poster,
+        LocalArtifactKind.thumb: paths.thumb,
+        LocalArtifactKind.fanart: paths.fanart,
+        LocalArtifactKind.trailer: paths.trailer,
+    }
+    sources = {
+        LocalArtifactKind.poster: files.get(LocalArtifactKind.poster),
+        LocalArtifactKind.thumb: thumb_src,
+        LocalArtifactKind.fanart: fanart_src,
+        LocalArtifactKind.trailer: files.get(LocalArtifactKind.trailer),
+    }
+
     written: list[Path] = []
-    try:
-        if _same_path(src_dir, dst_dir):
-            return written
-        entries = {p.name.lower(): p for p in src_dir.iterdir() if p.is_file()}
-    except OSError as exc:
-        logger.warning("local artifact scan failed", dir=str(src_dir), error=str(exc))
-        return written
-
-    stem = source.stem
-    targets = {"poster": paths.poster, "fanart": paths.fanart, "thumb": paths.thumb}
-    for role, names in _LOCAL_IMAGE_NAMES.items():
-        hit = _first_local_artifact(entries, names, _LOCAL_IMAGE_SUFFIXES, stem)
-        if hit is not None and _copy_local_image(hit, targets[role]):
-            written.append(targets[role])
-
-    trailer = _first_local_artifact(entries, _LOCAL_TRAILER_NAMES, (".mp4",), stem)
-    if trailer is not None:
-        try:
-            if not _same_path(trailer, paths.trailer):
-                paths.trailer.parent.mkdir(parents=True, exist_ok=True)
-                _copy_into_library(trailer, paths.trailer)
-                written.append(paths.trailer)
-        except OSError as exc:
-            logger.warning("local trailer copy failed", src=str(trailer), error=str(exc))
+    for kind, src_file in sources.items():
+        if src_file is None:
+            continue
+        dst = targets[kind]
+        if _same_path(src_file, dst):
+            continue  # 已在目标名上: 原地即生效, 也不自我覆盖
+        if kind is LocalArtifactKind.trailer:
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                _copy_into_library(src_file, dst)
+                written.append(dst)
+            except OSError as exc:
+                logger.warning("local trailer copy failed", src=str(src_file), error=str(exc))
+        elif _copy_local_image(src_file, dst):
+            written.append(dst)
 
     for dirname in _LOCAL_EXTRAFANART_DIRS:
         extra_dir = src_dir / dirname
