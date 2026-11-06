@@ -105,6 +105,10 @@ class ScrapePayload(BaseModel):
     content_type: ContentType = ContentType.CENSORED
     media_file_id: int | None = None
     use_cache: set[CacheKind] = {CacheKind.metadata, CacheKind.trans}
+    # 用户主动点刮削 (详情页 / 片库批量 / 任务提交) 表示要用新结果覆盖旧资料:
+    # 先清掉 NFO 导入或手动编辑留下的字段锁, 否则 upsert_metadata 会跳过锁定列.
+    # 系统自动刮削 (扫描扇出 / 文件发现 / 定时重刮 / feed) 必须显式置 False 以保留保护.
+    overwrite_locked: bool = Field(default=True, description="刮削前清空字段锁; 自动刮削须置 False")
 
 
 def build_feed_scrape_payload(feed: Feed, number: str) -> ScrapePayload:
@@ -122,6 +126,7 @@ def build_feed_scrape_payload(feed: Feed, number: str) -> ScrapePayload:
         content_type=content_type,
         media_file_id=None,
         use_cache=use_cache,
+        overwrite_locked=False,
     )
 
 

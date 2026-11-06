@@ -77,8 +77,7 @@ async def _auto_sync_artifacts(
             resource_store=runtime.resource_store,
             web_client=runtime.web_client,
             config=runtime.config.hot,
-            safe_dirs=runtime.safe_dirs,
-        )
+            )
     except Exception:
         logger.exception("auto artifact sync failed", metadata_id=metadata.id)
         return None
@@ -263,6 +262,9 @@ async def batch_scrape_metadata(req: MetadataBatchScrapeRequest, repo: RepoDep) 
                 number=metadata.number,
                 content_type=req.content_type if req.content_type is not None else metadata.content_type,
                 use_cache=req.use_cache,
+                # 从片库主动点「重新刮削」即表示要用新结果覆盖: 先清掉 NFO 导入 / 手动编辑留下的字段锁,
+                # 否则 upsert_metadata 会跳过锁定列, 界面与磁盘都看不到新数据.
+                overwrite_locked=True,
             )
         )
     # 批量提交动辄数百条, 逐条提交会重复付出事务开销
@@ -573,7 +575,6 @@ async def sync_artifacts(metadata_id: int, repo: RepoDep, runtime: RuntimeDep) -
         resource_store=runtime.resource_store,
         web_client=runtime.web_client,
         config=runtime.config.hot,
-        safe_dirs=runtime.safe_dirs,
     )
     logger.info(
         "artifacts synced",

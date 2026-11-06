@@ -69,6 +69,7 @@ class RescrapeHandler(TaskHandler[RescrapePayload, RescrapeResult]):
                     number=meta.number,
                     content_type=meta.content_type,
                     use_cache=_USE_CACHE,
+                    overwrite_locked=False,
                 ).model_dump(mode="json"),
                 priority=-1,
             )

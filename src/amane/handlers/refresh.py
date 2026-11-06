@@ -159,6 +159,7 @@ class RefreshHandler(TaskHandler[RefreshPayload, RefreshResult]):
                         number=parsed.number,
                         content_type=parsed.content_type,
                         use_cache=payload.use_cache,
+                        overwrite_locked=False,
                     ).model_dump(mode="json"),
                 )
             )

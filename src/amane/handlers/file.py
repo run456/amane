@@ -772,14 +772,15 @@ async def write_metadata_artifacts(
     resource_store: ResourceStore,
     web_client: WebClient,
     config: HotSettings,
-    safe_dirs: Sequence[Path] | None = (),
 ) -> "ArtifactSyncResult":
-    """把当前 Metadata 的 NFO 与封面 / 海报 / 背景图重写到已整理文件所在目录.
+    """把当前 Metadata 的 NFO 与封面 / 海报 / 背景图重写到视频实际所在目录.
 
     - 只写盘: 不改 DB, 不移动视频, 不触发整理, 不叠加水印 (每次从 Resource 原图重拷).
+    - 产物按视频同目录的 Emby/Kodi 命名: {video_name}.nfo / poster.jpg / thumb.jpg / fanart.jpg.
+      不再按库整理模板推算目录: 「先入库后刮削」的文件往往不在模板算出的位置, 旧逻辑会因
+      目标目录不存在而整条跳过, 或把 NFO 写到视频不在的目录, 媒体服务器自然读不到.
     - 遵守 Library.write_nfo 与 Library.copy_resources; 不复制预告片, 保留本地 trailer.mp4.
-    - 仅处理视频仍在磁盘且目标目录已存在的 MediaFile; 未整理的文件不产生孤儿 NFO.
-    - 单个文件失败记入 errors 并继续, 不影响其它文件与已提交的 DB 写入.
+    - 仅处理视频仍在磁盘的 MediaFile; 单个文件失败记入 errors 并继续.
     """
     result = ArtifactSyncResult()
     assert metadata.id is not None
@@ -788,7 +789,6 @@ async def write_metadata_artifacts(
         result.skipped.append("无关联媒体文件")
         return result
 
-    actor_genders = {a.name: a.gender for a in await repo.get_actors_by_names(metadata.actors)}
     for media_file in files:
         src = Path(media_file.path)
         library = await repo.get_library(media_file.library_id)
@@ -799,25 +799,18 @@ async def write_metadata_artifacts(
             result.skipped.append(f"{src.name}: 源视频不在磁盘")
             continue
 
+        # 视频所在目录就是媒体服务器读取的目录, 产物一律写这里.
+        paths = ResolvedPaths(
+            video=src,
+            thumb=src.parent / "thumb.jpg",
+            poster=src.parent / "poster.jpg",
+            fanart=src.parent / "fanart.jpg",
+            extrafanart_dir=src.parent / "extrafanart",
+            nfo=src.with_suffix(".nfo"),
+            trailer=src.parent / "trailer.mp4",
+            link=None,
+        )
         file_info = parse_file_info(media_file.path, has_external_subtitle=media_file.has_external_subtitle)
-        try:
-            paths = resolve_paths(
-                library,
-                metadata,
-                ext=src.suffix.lstrip("."),
-                source_path=src,
-                file_info=file_info,
-                safe_dirs=safe_dirs,
-                actor_genders=actor_genders,
-            )
-        except ValueError as exc:
-            result.errors.append(f"{src.name}: 路径模板无效: {exc}")
-            continue
-
-        # 目标目录必须已存在: 未整理的文件不写盘, 避免凭空创建目录与孤儿 NFO.
-        if not paths.nfo.parent.is_dir():
-            result.skipped.append(f"{src.name}: 目标目录不存在, 需先整理")
-            continue
 
         # 预告片不参与写回: 本地 trailer.mp4 可能是用户自行放置的.
         kinds = set(library.copy_resources) - {DownloadableResource.trailer}
@@ -838,7 +831,7 @@ async def write_metadata_artifacts(
                 if not await write_nfo_file(metadata, paths.nfo):
                     result.errors.append(f"{src.name}: NFO 写入失败")
                     continue
-            result.written.append(str(paths.nfo.parent))
+            result.written.append(str(src.parent))
         except Exception as exc:  # noqa: BLE001 - 单文件失败不影响其它文件
             logger.exception("artifact sync failed", number=metadata.number, path=str(src))
             result.errors.append(f"{src.name}: {exc}")

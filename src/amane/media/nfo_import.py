@@ -271,8 +271,9 @@ async def ensure_metadata_from_disk(repo: Repository, media: MediaFile) -> Metad
 
     if fields and (created or _is_placeholder(meta, number)):
         fields.setdefault("title", number)
-        # MANUAL 写入会自动把可锁列并入 locked_fields, 之后手动刮削不会覆盖导入资料.
-        updated = await repo.update_metadata(meta.id, mode=WriteMode.MANUAL, **fields)
+        # 不上锁: 用户之后主动点刮削时, 新结果要能覆盖这里导入的资料.
+        # 保护改由 ScrapePayload.overwrite_locked 控制 (自动刮削不覆盖, 手动刮削覆盖).
+        updated = await repo.update_metadata(meta.id, mode=WriteMode.AUTO, **fields)
         if updated is not None:
             meta = updated
         action = "imported"

@@ -1,3 +1,4 @@
+import os
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Protocol
 
@@ -18,7 +19,7 @@ from .protocol import FollowupTask, TaskHandler, TaskResult
 
 if TYPE_CHECKING:
     from ..config import HotSettings
-    from ..db.models import MediaFile
+    from ..db.models import MediaFile, Metadata
     from ..db.repository import Repository
     from ..llm import Translator
     from ..media import ResourceStore
@@ -26,6 +27,14 @@ if TYPE_CHECKING:
 
 # 进度: 聚合按已满足标量字段计数; 其后固定两步 (物化图片 / 持久化).
 _PROGRESS_POST_STEPS = 2
+
+# 刮削成功后把 NFO / 封面写回视频所在目录; 置 0 可退回「只写库不写盘」的原行为.
+_SYNC_ARTIFACTS_ON_SCRAPE = os.getenv("AMANE_SYNC_ARTIFACTS_ON_SCRAPE", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 
 
 class CrawlerFactoryLike(Protocol):
@@ -60,6 +69,10 @@ class ScrapeHandler(TaskHandler[ScrapePayload, ScrapeResult]):
 
     async def handle(self, payload: ScrapePayload) -> TaskResult[ScrapeResult]:
         bind_contextvars(number=payload.number)
+
+        # 用户主动重新刮削: 先解锁, 否则 NFO 导入 / 手动编辑锁定的字段会被 upsert 跳过.
+        if payload.overwrite_locked:
+            await self._clear_locks(payload.number)
 
         content_type = payload.content_type
         progress_total = len(SCALAR_FIELDS) + _PROGRESS_POST_STEPS
@@ -202,6 +215,9 @@ class ScrapeHandler(TaskHandler[ScrapePayload, ScrapeResult]):
 
         await finalize_media_file(self._repo, payload.media_file_id, meta.id)
 
+        # 刮削结果落库后立刻写回视频目录, 让 Emby 等媒体服务器直接读到新 NFO / 封面.
+        await self._sync_artifacts(meta)
+
         # 为尚未刮削的演员扇出 ACTOR_SCRAPE.
         actor_followups = await self._actor_scrape_followups(meta.actors)
         # 库开启自动整理时为本次刮削的文件扇出 ORGANIZE.
@@ -230,6 +246,43 @@ class ScrapeHandler(TaskHandler[ScrapePayload, ScrapeResult]):
             ),
             followups=[*actor_followups, *organize_followups],
         )
+
+    async def _clear_locks(self, number: str) -> None:
+        """清空条目字段锁; 失败只记日志, 不阻断刮削."""
+        try:
+            existing = await self._repo.get_metadata_by_number(number)
+            if existing is not None and existing.id is not None and existing.locked_fields:
+                await self._repo.set_metadata_locks(existing.id, [])
+                current().info(
+                    "metadata locks cleared for rescrape", number=number, fields=len(existing.locked_fields)
+                )
+        except Exception:
+            current().exception("failed to clear metadata locks", number=number)
+
+    async def _sync_artifacts(self, meta: "Metadata") -> None:
+        """把本次刮削结果写回视频所在目录; 失败只记日志, 不影响已提交的 DB 写入."""
+        if not _SYNC_ARTIFACTS_ON_SCRAPE or self._web_client is None:
+            return
+        try:
+            # 延迟导入: handlers 包 __init__ 同时导出 file 与 scrape, 避免初始化期循环引用.
+            from .file import write_metadata_artifacts
+
+            result = await write_metadata_artifacts(
+                self._repo,
+                meta,
+                resource_store=self._resource_store,
+                web_client=self._web_client,
+                config=self._config,
+            )
+            current().info(
+                "artifacts synced after scrape",
+                metadata_id=meta.id,
+                written=len(result.written),
+                skipped=len(result.skipped),
+                errors=len(result.errors),
+            )
+        except Exception:
+            current().exception("artifact sync after scrape failed", metadata_id=meta.id)
 
     def failure_result(self, payload: ScrapePayload) -> ScrapeResult | None:
         """抓取之后崩掉时, 站点明细仍要能回答"为什么刮不到"."""
