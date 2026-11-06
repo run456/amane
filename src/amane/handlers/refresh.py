@@ -6,6 +6,7 @@ import structlog
 
 from ..db import TaskType
 from ..library import MEDIA_EXTENSIONS, InventoryStore, LibraryHit, LibraryScan, OrphanScan, scan_inventory
+from ..media.nfo_import import ensure_metadata_from_disk
 from ..parsing import parse_file_info
 from ..utils.path import nfc_path
 from ..utils.threads import path_exists, path_is_dir
@@ -51,7 +52,7 @@ class RefreshHandler(TaskHandler[RefreshPayload, RefreshResult]):
             subtitle_extensions=library.subtitle_extensions if library is not None else None,
         )
 
-        added = removed = scrape = subtitles = 0
+        added = removed = scrape = subtitles = materialized = 0
 
         existing = await self._repo.list_media_files(library_id=payload.library_id, limit=None)
         existing_by_path = {nfc_path(f.path): f for f in existing}
@@ -107,8 +108,20 @@ class RefreshHandler(TaskHandler[RefreshPayload, RefreshResult]):
                         added += 1
                     else:
                         subtitles += await self._sync_external_subtitle(existing_by_path[path_key], hit)
+
+                    # 同目录已有 NFO 或文件名可识别番号时直接建条目. 置为 SCRAPED 后,
+                    # 末尾 list_media_files(status=PENDING) 不再对它扇出 SCRAPE.
+                    media = existing_by_path[path_key]
+                    if media.metadata_id is None:
+                        try:
+                            if await ensure_metadata_from_disk(self._repo, media) is not None:
+                                materialized += 1
+                        except Exception:
+                            logger.exception("materialize metadata failed", path=str(file_path))
                 if added:
                     logger.info("new files discovered", path=payload.path, count=added)
+                if materialized:
+                    logger.info("metadata materialized from disk", path=payload.path, count=materialized)
 
             # 删除索引中已不存在的记录.
             if want_remove:
