@@ -16,21 +16,25 @@ class FacetResponse(BaseModel):
 
 
 class FacetBatchAction(StrEnum):
-    """分类批量动作; 两个动作都是整体赋值且幂等.
+    """分类批量动作; favorite/unfavorite 是整体赋值且幂等, delete 复用单标签删除链路.
 
     不设逐项取反 (toggle): 多选混合态下点「收藏」必须保持收藏, 取反会取消已收藏的条目. 枚举是
-    动作信封的扩展位, 新增动作 (如批量删除) 时 ``FacetBatchResponse`` 的字段按动作解释.
+    动作信封的扩展位; ``FacetBatchResponse`` 的字段按动作解释 (delete 下 changed=成功删除数,
+    unchanged 恒为 0, missing=不存在的 id 数).
     """
 
     FAVORITE = "favorite"
     UNFAVORITE = "unfavorite"
+    DELETE = "delete"
 
 
 class FacetBatchRequest(BaseModel):
     """对一批分类执行同一个动作; 重复 id 去重, 使结果计数以去重后的条目数为准."""
 
     facet_ids: list[int] = Field(min_length=1, description="分类 ID 列表")
-    action: FacetBatchAction = Field(description="favorite 置为已收藏, unfavorite 置为未收藏; 两者均幂等")
+    action: FacetBatchAction = Field(
+        description="favorite 置为已收藏, unfavorite 置为未收藏; delete 复用单标签删除链路"
+    )
 
     @field_validator("facet_ids")
     @classmethod
@@ -39,10 +43,14 @@ class FacetBatchRequest(BaseModel):
 
 
 class FacetBatchResponse(BaseModel):
-    """批量动作的结果计数, 字段按 action 解释; 两个已实现动作下三者之和等于去重后的条目数."""
+    """批量动作的结果计数, 字段按 action 解释; 三者之和等于去重后的条目数.
 
-    changed: int = Field(description="收藏位确实发生写入的分类数")
-    unchanged: int = Field(description="已处于目标取值的分类数")
+    favorite/unfavorite: changed=收藏位写入数, unchanged=已处于目标取值数, missing=不存在的 id 数.
+    delete: changed=成功删除数, unchanged 恒为 0, missing=不存在的 id 数.
+    """
+
+    changed: int = Field(description="发生写入的分类数; delete 下为成功删除数")
+    unchanged: int = Field(description="已处于目标取值的分类数; delete 下恒为 0")
     missing: int = Field(description="不存在的分类 id 数")
 
 

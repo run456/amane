@@ -127,6 +127,7 @@
     "userTagDetached": "已移除用户标签",
     "userTagDeleted": "用户标签已删除",
     "facetDeleted": "分类已删除并加入剔除名单",
+    "facetsBatchDeleted": "已删除 {{count}} 个分类并更新影片详情",
     "facetRuleDeleted": "规则已移除",
     "commentCreated": "评论已发表",
     "commentUpdated": "评论已保存",

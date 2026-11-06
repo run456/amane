@@ -41,6 +41,7 @@ import { SortableTh } from "@/components/common/sortable-th";
 import { useFacetIdentityActions } from "@/hooks/use-facet-identity-actions";
 import { useIdSelection } from "@/hooks/use-id-selection";
 import { extractErrorMessage } from "@/lib/api-error";
+import { confirm } from "@/lib/confirm";
 import { isOneOf } from "@/lib/exhaustive";
 import { FAVORITE_FACET_KINDS } from "@/lib/exhaustive-maps";
 import { useUIStore } from "@/stores/ui";
@@ -129,6 +130,45 @@ export function CatalogFacetTable({
       }),
   });
 
+  // 批量删除与单删共用后端 delete_facet 链路: 写剔除规则 + 从所有影片 Metadata 真值移除.
+  const batchDeleteMutation = useMutation({
+    ...batchFacetsMutation(),
+    onSuccess: (res) => {
+      notifications.show({
+        message: t("common:toast.facetsBatchDeleted", { count: res.changed }),
+        color: "blue",
+      });
+      // 后端改了 Metadata 真值, 影片列表 / 详情缓存必须一并失效, 否则详情页仍显示已删分类.
+      void queryClient.invalidateQueries({ queryKey: [{ _id: "listFacets" }] });
+      void queryClient.invalidateQueries({ queryKey: [{ _id: "listFacetRules" }] });
+      void queryClient.invalidateQueries({ queryKey: [{ _id: "listMetadata" }] });
+      void queryClient.invalidateQueries({ queryKey: [{ _id: "getMetadata" }] });
+      clear();
+    },
+    onError: (err) =>
+      notifications.show({
+        message: extractErrorMessage(err, t("common:toast.operationFailed")),
+        color: "red",
+      }),
+  });
+
+  async function handleBatchDelete() {
+    if (selected.size === 0) return;
+    const message = isUserTag
+      ? t("manage.batchDeleteUserTagBody", { count: selected.size })
+      : t("manage.batchDeleteFacetBody", { count: selected.size });
+    const ok = await confirm({
+      title: t("common:actions.delete"),
+      message,
+      confirmLabel: t("common:actions.delete"),
+    });
+    if (!ok) return;
+    batchDeleteMutation.mutate({
+      path: { kind },
+      body: { facet_ids: selectedIds, action: "delete" },
+    });
+  }
+
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const effectiveSortBy = sortBy ?? "name";
   const effectiveOrder = order ?? "asc";
@@ -203,6 +243,18 @@ export function CatalogFacetTable({
                   </Button>
                 </>
               )}
+              {/* 批量删除对所有 kind 可用 (含 actor / user_tag), 不受收藏分类限制. */}
+              <Button
+                size="xs"
+                variant="light"
+                color="red"
+                leftSection={<IconTrash size={14} />}
+                loading={batchDeleteMutation.isPending}
+                disabled={selected.size === 0}
+                onClick={() => void handleBatchDelete()}
+              >
+                {t("manage.batchDelete")}
+              </Button>
             </SelectionBar>
           </Stack>
         }

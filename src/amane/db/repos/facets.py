@@ -525,6 +525,23 @@ class FacetsRepoMixin(RepositoryMixinBase):
                 return await delete_scalar_facet(session, SCALAR_FACETS[kind], facet_id)
             raise ValueError(f"unknown facet kind: {kind}")
 
+    async def delete_facets_batch(self, kind: FacetKind, facet_ids: Sequence[int]) -> FacetBatchResult:
+        """批量删除分类: 逐个复用单标签 ``delete_facet`` 的完整链路.
+
+        单删会写剔除规则、从所有影片的 Metadata 真值移除该名字并更新 ``updated_at``; 这里不复制
+        那段逻辑而是逐条调用它, 保证批量与单删的行为完全一致 (含 actor 别名拉黑等依赖前序状态的
+        判断). ``delete_facet`` 内部自行开 session 并 commit, 所以是逐条提交而非单事务; 某条失败
+        时前面已删除的不回滚, 但不存在的 id 只计入 ``missing`` 不影响其它条目.
+        """
+        changed = 0
+        missing = 0
+        for facet_id in unique_ids(facet_ids):
+            if await self.delete_facet(kind, facet_id):
+                changed += 1
+            else:
+                missing += 1
+        return FacetBatchResult(changed=changed, unchanged=0, missing=missing)
+
     async def list_facet_rules(self, kind: FacetKind) -> list[FacetRule]:
         if kind not in SCRAPE_FACET_KINDS:
             raise ValueError(f"facet kind {kind} 不支持规则")

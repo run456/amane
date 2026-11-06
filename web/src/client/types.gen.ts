@@ -1250,12 +1250,13 @@ export type ErrorRow = {
 /**
  * FacetBatchAction
  *
- * 分类批量动作; 两个动作都是整体赋值且幂等.
+ * 分类批量动作; favorite/unfavorite 是整体赋值且幂等, delete 复用单标签删除链路.
  *
  * 不设逐项取反 (toggle): 多选混合态下点「收藏」必须保持收藏, 取反会取消已收藏的条目. 枚举是
- * 动作信封的扩展位, 新增动作 (如批量删除) 时 ``FacetBatchResponse`` 的字段按动作解释.
+ * 动作信封的扩展位; ``FacetBatchResponse`` 的字段按动作解释 (delete 下 changed=成功删除数,
+ * unchanged 恒为 0, missing=不存在的 id 数).
  */
-export type FacetBatchAction = 'favorite' | 'unfavorite';
+export type FacetBatchAction = 'favorite' | 'unfavorite' | 'delete';
 
 /**
  * FacetBatchRequest
@@ -1270,7 +1271,7 @@ export type FacetBatchRequest = {
      */
     facet_ids: Array<number>;
     /**
-     * favorite 置为已收藏, unfavorite 置为未收藏; 两者均幂等
+     * favorite 置为已收藏, unfavorite 置为未收藏; delete 复用单标签删除链路
      */
     action: FacetBatchAction;
 };
@@ -1278,19 +1279,22 @@ export type FacetBatchRequest = {
 /**
  * FacetBatchResponse
  *
- * 批量动作的结果计数, 字段按 action 解释; 两个已实现动作下三者之和等于去重后的条目数.
+ * 批量动作的结果计数, 字段按 action 解释; 三者之和等于去重后的条目数.
+ *
+ * favorite/unfavorite: changed=收藏位写入数, unchanged=已处于目标取值数, missing=不存在的 id 数.
+ * delete: changed=成功删除数, unchanged 恒为 0, missing=不存在的 id 数.
  */
 export type FacetBatchResponse = {
     /**
      * Changed
      *
-     * 收藏位确实发生写入的分类数
+     * 发生写入的分类数; delete 下为成功删除数
      */
     changed: number;
     /**
      * Unchanged
      *
-     * 已处于目标取值的分类数
+     * 已处于目标取值的分类数; delete 下恒为 0
      */
     unchanged: number;
     /**

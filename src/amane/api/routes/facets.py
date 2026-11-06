@@ -100,18 +100,24 @@ async def delete_facet_rule(kind: FacetKind, rule_id: int, repo: RepoDep) -> Res
 
 @router.post("/{kind}/batch")
 async def batch_facets(kind: FacetKind, req: FacetBatchRequest, repo: RepoDep) -> FacetBatchResponse:
-    """对一批分类执行同一个动作, 单个事务; 分类不支持收藏返回 400.
+    """对一批分类执行同一个动作; 收藏动作在单个事务内完成且要求分类支持收藏.
 
-    不存在的 id 计入 ``missing`` 而不报 404 — 批量请求里某个 id 已失效不该让整批无结果. 动作语义
-    与扩展位见 ``FacetBatchAction``.
+    ``delete`` 逐个复用单标签 ``delete_facet`` 的完整链路 (写剔除规则、从 Metadata 真值剥离
+    并更新影片详情), 因该链路内部自行 commit 而逐条提交; 它对所有 kind 可用, 不受收藏限制.
+    不存在的 id 计入 ``missing`` 而不报 404 — 批量请求里某个 id 已失效不该让整批无结果.
     """
-    if kind not in FAVORITE_FACET_KINDS:
-        raise HTTPException(status_code=400, detail="该分类不支持收藏")
     match req.action:
-        case FacetBatchAction.FAVORITE:
-            result = await repo.set_facets_favorite(kind, req.facet_ids, is_favorite=True)
-        case FacetBatchAction.UNFAVORITE:
-            result = await repo.set_facets_favorite(kind, req.facet_ids, is_favorite=False)
+        case FacetBatchAction.FAVORITE | FacetBatchAction.UNFAVORITE:
+            if kind not in FAVORITE_FACET_KINDS:
+                raise HTTPException(status_code=400, detail="该分类不支持收藏")
+            result = await repo.set_facets_favorite(
+                kind, req.facet_ids, is_favorite=req.action is FacetBatchAction.FAVORITE
+            )
+        case FacetBatchAction.DELETE:
+            try:
+                result = await repo.delete_facets_batch(kind, req.facet_ids)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
     logger.info(
         "facets batch",
         kind=kind,

@@ -557,10 +557,11 @@ export const deleteFacetRule = <ThrowOnError extends boolean = false>(options: O
 /**
  * Batch Facets
  *
- * 对一批分类执行同一个动作, 单个事务; 分类不支持收藏返回 400.
+ * 对一批分类执行同一个动作; 收藏动作在单个事务内完成且要求分类支持收藏.
  *
- * 不存在的 id 计入 ``missing`` 而不报 404 — 批量请求里某个 id 已失效不该让整批无结果. 动作语义
- * 与扩展位见 ``FacetBatchAction``.
+ * ``delete`` 逐个复用单标签 ``delete_facet`` 的完整链路 (写剔除规则、从 Metadata 真值剥离
+ * 并更新影片详情), 因该链路内部自行 commit 而逐条提交; 它对所有 kind 可用, 不受收藏限制.
+ * 不存在的 id 计入 ``missing`` 而不报 404 — 批量请求里某个 id 已失效不该让整批无结果.
  */
 export const batchFacets = <ThrowOnError extends boolean = false>(options: Options<BatchFacetsData, ThrowOnError>): RequestResult<BatchFacetsResponses, BatchFacetsErrors, ThrowOnError> => (options.client ?? client).post<BatchFacetsResponses, BatchFacetsErrors, ThrowOnError>({
     url: '/api/facets/{kind}/batch',

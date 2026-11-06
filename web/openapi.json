@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Amane API",
-    "version": "0.26.4"
+    "version": "0.26.5"
   },
   "paths": {
     "/api/health": {
@@ -3726,7 +3726,7 @@
           "facets"
         ],
         "summary": "Batch Facets",
-        "description": "对一批分类执行同一个动作, 单个事务; 分类不支持收藏返回 400.\n\n不存在的 id 计入 ``missing`` 而不报 404 — 批量请求里某个 id 已失效不该让整批无结果. 动作语义\n与扩展位见 ``FacetBatchAction``.",
+        "description": "对一批分类执行同一个动作; 收藏动作在单个事务内完成且要求分类支持收藏.\n\n``delete`` 逐个复用单标签 ``delete_facet`` 的完整链路 (写剔除规则、从 Metadata 真值剥离\n并更新影片详情), 因该链路内部自行 commit 而逐条提交; 它对所有 kind 可用, 不受收藏限制.\n不存在的 id 计入 ``missing`` 而不报 404 — 批量请求里某个 id 已失效不该让整批无结果.",
         "operationId": "batch_facets",
         "parameters": [
           {
@@ -8750,10 +8750,11 @@
         "type": "string",
         "enum": [
           "favorite",
-          "unfavorite"
+          "unfavorite",
+          "delete"
         ],
         "title": "FacetBatchAction",
-        "description": "分类批量动作; 两个动作都是整体赋值且幂等.\n\n不设逐项取反 (toggle): 多选混合态下点「收藏」必须保持收藏, 取反会取消已收藏的条目. 枚举是\n动作信封的扩展位, 新增动作 (如批量删除) 时 ``FacetBatchResponse`` 的字段按动作解释."
+        "description": "分类批量动作; favorite/unfavorite 是整体赋值且幂等, delete 复用单标签删除链路.\n\n不设逐项取反 (toggle): 多选混合态下点「收藏」必须保持收藏, 取反会取消已收藏的条目. 枚举是\n动作信封的扩展位; ``FacetBatchResponse`` 的字段按动作解释 (delete 下 changed=成功删除数,\nunchanged 恒为 0, missing=不存在的 id 数)."
       },
       "FacetBatchRequest": {
         "properties": {
@@ -8768,7 +8769,7 @@
           },
           "action": {
             "$ref": "#/components/schemas/FacetBatchAction",
-            "description": "favorite 置为已收藏, unfavorite 置为未收藏; 两者均幂等"
+            "description": "favorite 置为已收藏, unfavorite 置为未收藏; delete 复用单标签删除链路"
           }
         },
         "type": "object",
@@ -8784,12 +8785,12 @@
           "changed": {
             "type": "integer",
             "title": "Changed",
-            "description": "收藏位确实发生写入的分类数"
+            "description": "发生写入的分类数; delete 下为成功删除数"
           },
           "unchanged": {
             "type": "integer",
             "title": "Unchanged",
-            "description": "已处于目标取值的分类数"
+            "description": "已处于目标取值的分类数; delete 下恒为 0"
           },
           "missing": {
             "type": "integer",
@@ -8804,7 +8805,7 @@
           "missing"
         ],
         "title": "FacetBatchResponse",
-        "description": "批量动作的结果计数, 字段按 action 解释; 两个已实现动作下三者之和等于去重后的条目数."
+        "description": "批量动作的结果计数, 字段按 action 解释; 三者之和等于去重后的条目数.\n\nfavorite/unfavorite: changed=收藏位写入数, unchanged=已处于目标取值数, missing=不存在的 id 数.\ndelete: changed=成功删除数, unchanged 恒为 0, missing=不存在的 id 数."
       },
       "FacetKind": {
         "type": "string",
