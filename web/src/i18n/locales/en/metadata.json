@@ -167,6 +167,28 @@
       "success": "Poster updated",
       "noThumb": "A cover image is required to crop a poster"
     },
+    "translate": {
+      "action": "Translate",
+      "title": "Lara translate",
+      "hint": "Review the translation first. Replacing a field locks it, so later scrapes will not overwrite it.",
+      "start": "Translate",
+      "retry": "Translate again",
+      "characters": "{{count}} characters",
+      "sourceLabel": "Source",
+      "resultLabel": "Translation",
+      "applyTitle": "Replace title",
+      "applyPlot": "Replace plot",
+      "apply": "Apply selected",
+      "empty": "Title and plot are both empty, nothing to translate",
+      "noSelection": "Select at least one field",
+      "success": "Translation applied"
+    },
+    "uploadPoster": {
+      "action": "Replace cover",
+      "success": "Cover updated",
+      "failed": "Failed to update cover",
+      "tooLarge": "Image exceeds 20MB"
+    },
     "playbackCopyTimestamp": "Copy timestamp",
     "playbackCopyLink": "Copy link to current time",
     "playbackCopied": "Copied to clipboard",

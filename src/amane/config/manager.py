@@ -636,6 +636,24 @@ PromptText = Annotated[str, Field(max_length=PROMPT_MAX_LENGTH, json_schema_extr
 """提示词文本框: ``x-long`` 声明多行, 顶层字段与 dict 值共用同一控制符."""
 
 
+class LaraConfig(BaseModel):
+    """Lara Translate 专用 API (Access Key 认证). 与 llm section 完全独立.
+
+    只服务「按需翻译」: 在片库详情页点翻译, 不进入刮削管线. 免费套餐字符额度有限,
+    因此译文先返回给前端预览, 用户勾选确认后才写回元数据.
+    """
+
+    access_key_id: str = Field(default="", description="Lara Access Key ID")
+    access_key_secret: str = Field(default="", description="Lara Access Key Secret (仅保存在本机 config.toml)")
+    base_url: str = Field(
+        default="https://api.laratranslate.com",
+        description="API 地址; 欧洲区为 https://api.eu.laratranslate.com, 美国区为 https://api.us.laratranslate.com",
+    )
+    target_language: str = Field(default="zh-CN", description="默认目标语言代码, 如 zh-CN / zh-TW / en-US")
+    source_language: str = Field(default="", description="默认源语言代码; 留空表示自动检测")
+    style: str = Field(default="faithful", description="翻译风格: faithful 忠实 / fluid 流畅 / creative 创作")
+
+
 class LLMConfig(BaseModel):
     """凭据放 Hot, 可在 UI 修改并热生效. 与 agent section 隔离."""
 
@@ -855,6 +873,7 @@ class HotSettings(BaseModel):
     semantic: SemanticConfig = SemanticConfig()
     watermark: WatermarkConfig = WatermarkConfig()
     llm: LLMConfig = LLMConfig()
+    lara: LaraConfig = LaraConfig()
     r18: R18Config = R18Config()
     watcher: WatcherConfig = WatcherConfig()
     worker: WorkerConfig = WorkerConfig()

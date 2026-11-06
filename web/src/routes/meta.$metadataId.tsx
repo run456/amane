@@ -25,6 +25,7 @@ import {
   IconExternalLink,
   IconFolders,
   IconGitMerge,
+  IconLanguage,
   IconLock,
   IconLockOpen,
   IconPencil,
@@ -33,6 +34,7 @@ import {
   IconRefresh,
   IconStar,
   IconTrash,
+  IconUpload,
   IconX,
 } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -63,10 +65,12 @@ import { VrBadge } from "@/components/media/vr-badge";
 import { FanartLightbox, FanartStrip } from "@/components/media/fanart-lightbox";
 import { FilePhaseBadges, FilePhaseOverlay } from "@/components/media/file-phase-badges";
 import { PosterCropDialog } from "@/components/media/poster-crop-dialog";
+import { TranslateDialog } from "@/components/media/translate-dialog";
 import { MergeDialog } from "@/components/metadata/merge-dialog";
 import { type JSONSchemaObject, resolveSchema } from "@/components/schema-form/schema";
 import { SchemaForm } from "@/components/schema-form/schema-form";
 import { extractErrorMessage } from "@/lib/api-error";
+import { apiFetch } from "@/lib/api-token";
 import { confirm } from "@/lib/confirm";
 import { USER_TAG_FACET_LIST } from "@/lib/facets";
 import { FIELD_LABEL_KEY, LOCKABLE_FIELDS } from "@/lib/media/metadata-fields";
@@ -141,6 +145,9 @@ function TitleDetailPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [cropOpen, setCropOpen] = useState(false);
+  const [translateOpen, setTranslateOpen] = useState(false);
+  const [uploadingPoster, setUploadingPoster] = useState(false);
+  const posterFileRef = useRef<HTMLInputElement>(null);
   const [coverLightboxOpen, coverLightbox] = useDisclosure(false);
   const [playingTrailer, setPlayingTrailer] = useState(false);
   // 播放失败的预告片地址: 只对该地址有效, 记录之外 (条目切换或重新刮削换了地址) 一律不算失败.
@@ -202,6 +209,40 @@ function TitleDetailPage() {
     void queryClient.invalidateQueries({
       queryKey: getMetadataQueryKey({ path: { metadata_id: id } }),
     });
+  };
+
+  /** 上传本地图片替换封面: 后端会同时更新 poster/thumb 并写盘到库目录. */
+  const uploadPoster = async (file: File) => {
+    setUploadingPoster(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const response = await apiFetch(`/api/metadata/${id}/poster`, {
+        method: "POST",
+        body: form,
+      });
+      if (!response.ok) {
+        const body: unknown = await response.json().catch(() => null);
+        const detail = (body as { detail?: unknown } | null)?.detail;
+        throw new Error(typeof detail === "string" ? detail : `HTTP ${response.status}`);
+      }
+      notifications.show({ message: t("detail.uploadPoster.success"), color: "blue" });
+      // 新图换了地址, 旧的加载失败标记必须清掉, 否则仍显示占位.
+      setThumbBroken(false);
+      setPosterBroken(false);
+      invalidateDetail();
+      void queryClient.invalidateQueries({ queryKey: listMetadataQueryKey() });
+    } catch (err) {
+      notifications.show({
+        message: extractErrorMessage(err, t("detail.uploadPoster.failed")),
+        color: "red",
+      });
+    } finally {
+      setUploadingPoster(false);
+      if (posterFileRef.current) {
+        posterFileRef.current.value = "";
+      }
+    }
   };
 
   const scrapeMutation = useMutation({
@@ -626,6 +667,27 @@ function TitleDetailPage() {
                 </Button>
               </Box>
             </Tooltip>
+            <Button
+              size="xs"
+              variant="light"
+              leftSection={<IconUpload size={14} />}
+              loading={uploadingPoster}
+              onClick={() => posterFileRef.current?.click()}
+            >
+              {t("detail.uploadPoster.action")}
+            </Button>
+            <input
+              ref={posterFileRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              hidden
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                if (file) {
+                  void uploadPoster(file);
+                }
+              }}
+            />
             <LockChip label={t("detail.fields.thumb")} {...lockProps("thumb_urls")} />
             <LockChip label={t("detail.fields.poster")} {...lockProps("poster_urls")} />
             <LockChip label={t("detail.fields.trailer")} {...lockProps("trailer_urls")} />
@@ -643,6 +705,16 @@ function TitleDetailPage() {
                 <LockToggle {...lockProps("title")} />
               </Group>
             )}
+            <Group gap="xs">
+              <Button
+                size="xs"
+                variant="light"
+                leftSection={<IconLanguage size={14} />}
+                onClick={() => setTranslateOpen(true)}
+              >
+                {t("detail.translate.action")}
+              </Button>
+            </Group>
           </div>
 
           <Group gap="lg" wrap="wrap">
@@ -980,6 +1052,16 @@ function TitleDetailPage() {
         opened={mergeOpen}
         onClose={() => setMergeOpen(false)}
         onMerged={invalidateDetail}
+      />
+
+      <TranslateDialog
+        opened={translateOpen}
+        onClose={() => setTranslateOpen(false)}
+        metadataId={id}
+        onApplied={() => {
+          invalidateDetail();
+          void queryClient.invalidateQueries({ queryKey: listMetadataQueryKey() });
+        }}
       />
 
       {thumbSrc && (

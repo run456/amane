@@ -184,3 +184,26 @@ class MetadataUserTagsRequest(BaseModel):
     ids: list[int] = Field(min_length=1, description="Metadata ID 列表")
     user_tag_ids: list[int] = Field(min_length=1, description="用户标签 ID 列表")
     action: Literal["attach", "detach"] = Field(description="attach 为并入, detach 为移除; 两者均幂等")
+
+
+class MetadataTranslateRequest(BaseModel):
+    """按需翻译: 只把译文返回给前端预览, 不写库."""
+
+    fields: list[Literal["title", "plot"]] = Field(
+        default_factory=lambda: ["title", "plot"], description="要翻译的字段"
+    )
+    target: str | None = Field(default=None, description="目标语言; None = 用设置里的默认值")
+    source: str | None = Field(default=None, description="源语言; None = 自动检测")
+
+
+class MetadataTranslateItem(BaseModel):
+    field: str = Field(description="字段名")
+    source: str = Field(description="原文")
+    translation: str = Field(description="译文")
+
+
+class MetadataTranslateResponse(BaseModel):
+    target_language: str = Field(description="实际使用的目标语言")
+    source_language: str | None = Field(default=None, description="Lara 检测或指定的源语言")
+    characters: int = Field(description="本次消耗的字符数 (原文长度合计)")
+    items: list[MetadataTranslateItem] = Field(description="逐字段译文")

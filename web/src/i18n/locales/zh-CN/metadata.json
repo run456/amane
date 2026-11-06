@@ -164,6 +164,28 @@
       "success": "海报已更新",
       "noThumb": "需要封面图才能裁切海报"
     },
+    "translate": {
+      "action": "翻译",
+      "title": "Lara 翻译",
+      "hint": "先看译文再决定是否替换。替换会自动锁定该字段, 之后的刮削不会覆盖。",
+      "start": "开始翻译",
+      "retry": "重新翻译",
+      "characters": "本次 {{count}} 字符",
+      "sourceLabel": "原文",
+      "resultLabel": "译文",
+      "applyTitle": "替换标题",
+      "applyPlot": "替换简介",
+      "apply": "写回选中项",
+      "empty": "标题与简介都为空, 没有可翻译的内容",
+      "noSelection": "请至少勾选一项",
+      "success": "已写回译文"
+    },
+    "uploadPoster": {
+      "action": "更换封面",
+      "success": "封面已更新",
+      "failed": "封面更新失败",
+      "tooLarge": "图片超过 20MB"
+    },
     "playbackCopyTimestamp": "复制时间戳",
     "playbackCopyLink": "复制当前时间的链接",
     "playbackCopied": "已复制到剪贴板",

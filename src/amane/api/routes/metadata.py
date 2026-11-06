@@ -1,8 +1,12 @@
+import hashlib
+import io
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from PIL import Image, ImageOps
 from pydantic import TypeAdapter
 
 from ...aggregate import compute_merge_updates
@@ -13,6 +17,8 @@ from ...db.repos.media import file_phase_of
 from ...handlers import ScrapePayload
 from ...handlers.file import ArtifactSyncResult, write_metadata_artifacts
 from ...media import manual_crop_image
+from ...media.lara import LaraClient, LaraError
+from ...media.resource_store import RESOURCE_URL_PREFIX
 from ...parsing import FilePhaseSummary as ParsedFilePhase
 from ...parsing import summarize_file_phases
 from ...semantic import SemanticUnavailable
@@ -33,6 +39,9 @@ from ..models import (
     MetadataLocksRequest,
     MetadataMergeEntriesRequest,
     MetadataResponse,
+    MetadataTranslateItem,
+    MetadataTranslateRequest,
+    MetadataTranslateResponse,
     MetadataUserTagsRequest,
     PartialMetadata,
     SemanticHitInfo,
@@ -51,6 +60,10 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/metadata", tags=["metadata"])
+
+# 封面上传: 限制原始体积与最终边长, 避免把超大原图塞进资源库.
+_MAX_POSTER_BYTES = 20 * 1024 * 1024
+_MAX_POSTER_EDGE = 2400
 
 
 async def _auto_sync_artifacts(
@@ -432,6 +445,119 @@ async def crop_poster_from_thumb(
         poster_url=poster_url,
     )
     await _auto_sync_artifacts(updated, repo, runtime)
+    return to_resp(MetadataResponse, updated)
+
+
+@router.post("/{metadata_id}/translate")
+async def translate_metadata(
+    metadata_id: int,
+    req: MetadataTranslateRequest,
+    repo: RepoDep,
+    runtime: RuntimeDep,
+) -> MetadataTranslateResponse:
+    """按需翻译标题/简介: 只返回译文, 不写库.
+
+    译文交前端二次确认, 用户勾选后才走 PATCH 写回: 一次点击不会意外覆盖原文,
+    也避免有限额度被误消耗. 写回时 ``WriteMode.MANUAL`` 会自动锁定字段.
+    """
+    metadata = await repo.get_metadata(metadata_id)
+    if metadata is None:
+        raise HTTPException(status_code=404, detail="影片不存在")
+
+    config = runtime.config.hot.lara
+    client = LaraClient(config)
+    if not client.configured:
+        raise HTTPException(
+            status_code=400, detail="尚未配置 Lara Access Key, 请到「设置 → lara」填写"
+        )
+
+    target = (req.target or config.target_language or "zh-CN").strip()
+    source = (req.source or config.source_language or "").strip() or None
+    items: list[MetadataTranslateItem] = []
+    characters = 0
+    detected: str | None = None
+    for field in req.fields:
+        text = getattr(metadata, field, None)
+        if not isinstance(text, str) or not text.strip():
+            continue
+        try:
+            translation, source_language = await client.translate(
+                text, target=target, source=source
+            )
+        except LaraError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        detected = detected or source_language
+        characters += len(text)
+        items.append(MetadataTranslateItem(field=field, source=text, translation=translation))
+
+    if not items:
+        raise HTTPException(status_code=400, detail="标题与简介都为空, 没有可翻译的内容")
+    logger.info(
+        "metadata translated",
+        metadata_id=metadata_id,
+        fields=[item.field for item in items],
+        characters=characters,
+    )
+    return MetadataTranslateResponse(
+        target_language=target,
+        source_language=detected,
+        characters=characters,
+        items=items,
+    )
+
+
+@router.post("/{metadata_id}/poster")
+async def upload_poster(
+    metadata_id: int,
+    file: Annotated[UploadFile, File(description="本地图片文件")],
+    repo: RepoDep,
+    runtime: RuntimeDep,
+) -> MetadataResponse:
+    """用上传的本地图片替换封面, 并自动写盘.
+
+    poster 与 thumb 同时指向这张图: 详情页优先显示 thumb, Emby 取 poster,
+    只改其中一个会出现「网页换了、Emby 没换」.
+    """
+    metadata = await repo.get_metadata(metadata_id)
+    if metadata is None:
+        raise HTTPException(status_code=404, detail="影片不存在")
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="文件为空")
+    if len(raw) > _MAX_POSTER_BYTES:
+        raise HTTPException(status_code=413, detail="图片超过 20MB")
+
+    try:
+        image = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="无法识别该图片") from exc
+    image.thumbnail((_MAX_POSTER_EDGE, _MAX_POSTER_EDGE), Image.Resampling.LANCZOS)
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=92, optimize=True)
+    data = buffer.getvalue()
+    digest = hashlib.sha256(data).hexdigest()[:16]
+
+    async def producer(dest: Path) -> bool:
+        dest.write_bytes(data)
+        return True
+
+    resource = await runtime.resource_store.acquire_derived(
+        f"upload:{digest}", "poster", digest, producer, ext=".jpg"
+    )
+    if resource is None:
+        raise HTTPException(status_code=500, detail="封面写入失败")
+    url = f"{RESOURCE_URL_PREFIX}/{runtime.resource_store.url_hash(resource.url)}"
+
+    updated = await repo.update_metadata(
+        metadata_id,
+        mode=WriteMode.MANUAL,
+        poster_urls=[url],
+        thumb_urls=[url],
+    )
+    assert updated is not None
+    await _auto_sync_artifacts(updated, repo, runtime)
+    logger.info("poster uploaded", metadata_id=metadata_id, bytes=len(data))
     return to_resp(MetadataResponse, updated)
 
 

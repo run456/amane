@@ -11,6 +11,7 @@
     "logging": "Logging",
     "sr": "Super Resolution",
     "llm": "LLM Translation",
+    "lara": "Lara Translation",
     "watermark": "Watermark",
     "semantic": "Semantic Search"
   },

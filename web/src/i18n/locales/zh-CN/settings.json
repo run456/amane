@@ -11,6 +11,7 @@
     "logging": "日志",
     "sr": "图像超分",
     "llm": "LLM 翻译",
+    "lara": "Lara 翻译",
     "watermark": "水印",
     "semantic": "语义检索"
   },
