@@ -330,6 +330,7 @@ def _place_library_images(
     file_info: FileInfo | None,
     content_type: ContentType,
     watermark_dir: Path | None,
+    watermarks: bool = True,
 ) -> None:
     # 复制封面 / 海报 / 预告片 / extrafanart 到库路径, 不判断目标上是否已有产物.
     # fanart 没有刮削来源, 内容取 thumb, 随 thumb 一同重写.
@@ -361,9 +362,9 @@ def _place_library_images(
         for i, p in enumerate(extrafanart):
             _copy_into_library(p, paths.extrafanart_dir / f"{i + 1}.jpg")
 
-    # 叠加水印 (thumb / poster).
+    # 叠加水印 (thumb / poster). 同步写盘传 watermarks=False, 避免对未重拷的旧图反复叠加.
     wm = config.watermark if config is not None else WatermarkConfig()
-    if wm.enabled and file_info is not None:
+    if watermarks and wm.enabled and file_info is not None:
         jpeg_quality = config.scraping.jpeg_quality if config is not None else 95
         if paths.thumb.exists():
             apply_cover_watermarks_from_info(
@@ -397,6 +398,7 @@ async def _download_images_via_store(
     file_info: FileInfo | None,
     content_type: ContentType,
     watermark_dir: Path | None = None,
+    watermarks: bool = True,
 ) -> None:
     """优先用 Resource 已有文件; 缺失则现场 acquire."""
     thumb_local = None
@@ -432,6 +434,7 @@ async def _download_images_via_store(
         file_info=file_info,
         content_type=content_type,
         watermark_dir=watermark_dir,
+        watermarks=watermarks,
     )
 
 
@@ -733,3 +736,110 @@ class CleanupHandler(TaskHandler[CleanupPayload, CleanupResult]):
         logger.info("cleanup completed", files_removed=files_removed, resources_removed=resources_removed)
 
         return TaskResult(True, result=CleanupResult(files_removed=files_removed, resources_removed=resources_removed))
+
+
+# ---------------------------------------------------------------------------
+# 元数据写回: 只重写 NFO 与附属图片, 不移动视频、不改索引、不写链接与字幕.
+# 与 ORGANIZE 共用 _download_images_via_store / write_nfo_file, 保证产物格式一致.
+# 由编辑保存、封面裁切与 POST /metadata/{id}/sync-artifacts 调用.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ArtifactSyncResult:
+    written: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, list[str]]:
+        return {"written": self.written, "skipped": self.skipped, "errors": self.errors}
+
+
+def _backup_nfo(path: Path) -> None:
+    """覆盖前留一份 .nfo.bak, 保留媒体服务器写入的节点以便人工恢复."""
+    if not path.exists():
+        return
+    try:
+        shutil.copy2(path, path.with_name(path.name + ".bak"))
+    except OSError as exc:
+        logger.warning("nfo backup failed", path=str(path), error=str(exc))
+
+
+async def write_metadata_artifacts(
+    repo: "Repository",
+    metadata: "Metadata",
+    *,
+    resource_store: ResourceStore,
+    web_client: WebClient,
+    config: HotSettings,
+    safe_dirs: Sequence[Path] | None = (),
+) -> "ArtifactSyncResult":
+    """把当前 Metadata 的 NFO 与封面 / 海报 / 背景图重写到已整理文件所在目录.
+
+    - 只写盘: 不改 DB, 不移动视频, 不触发整理, 不叠加水印 (每次从 Resource 原图重拷).
+    - 遵守 Library.write_nfo 与 Library.copy_resources; 不复制预告片, 保留本地 trailer.mp4.
+    - 仅处理视频仍在磁盘且目标目录已存在的 MediaFile; 未整理的文件不产生孤儿 NFO.
+    - 单个文件失败记入 errors 并继续, 不影响其它文件与已提交的 DB 写入.
+    """
+    result = ArtifactSyncResult()
+    assert metadata.id is not None
+    files = await repo.get_media_by_metadata_id(metadata.id)
+    if not files:
+        result.skipped.append("无关联媒体文件")
+        return result
+
+    actor_genders = {a.name: a.gender for a in await repo.get_actors_by_names(metadata.actors)}
+    for media_file in files:
+        src = Path(media_file.path)
+        library = await repo.get_library(media_file.library_id)
+        if library is None:
+            result.skipped.append(f"{src.name}: 媒体库不存在")
+            continue
+        if await existing_disk_path(src) is None:
+            result.skipped.append(f"{src.name}: 源视频不在磁盘")
+            continue
+
+        file_info = parse_file_info(media_file.path, has_external_subtitle=media_file.has_external_subtitle)
+        try:
+            paths = resolve_paths(
+                library,
+                metadata,
+                ext=src.suffix.lstrip("."),
+                source_path=src,
+                file_info=file_info,
+                safe_dirs=safe_dirs,
+                actor_genders=actor_genders,
+            )
+        except ValueError as exc:
+            result.errors.append(f"{src.name}: 路径模板无效: {exc}")
+            continue
+
+        # 目标目录必须已存在: 未整理的文件不写盘, 避免凭空创建目录与孤儿 NFO.
+        if not paths.nfo.parent.is_dir():
+            result.skipped.append(f"{src.name}: 目标目录不存在, 需先整理")
+            continue
+
+        # 预告片不参与写回: 本地 trailer.mp4 可能是用户自行放置的.
+        kinds = set(library.copy_resources) - {DownloadableResource.trailer}
+        try:
+            await _download_images_via_store(
+                metadata,
+                resource_store,
+                web_client,
+                paths,
+                config,
+                kinds,
+                file_info=file_info,
+                content_type=metadata.content_type,
+                watermarks=False,
+            )
+            if library.write_nfo:
+                _backup_nfo(paths.nfo)
+                if not await write_nfo_file(metadata, paths.nfo):
+                    result.errors.append(f"{src.name}: NFO 写入失败")
+                    continue
+            result.written.append(str(paths.nfo.parent))
+        except Exception as exc:  # noqa: BLE001 - 单文件失败不影响其它文件
+            logger.exception("artifact sync failed", number=metadata.number, path=str(src))
+            result.errors.append(f"{src.name}: {exc}")
+    return result

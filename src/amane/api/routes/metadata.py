@@ -11,6 +11,7 @@ from ...db.models import Metadata, MetadataSortField, SavedQueryEntity, SortOrde
 from ...db.repo_types import WriteMode
 from ...db.repos.media import file_phase_of
 from ...handlers import ScrapePayload
+from ...handlers.file import ArtifactSyncResult, write_metadata_artifacts
 from ...media import manual_crop_image
 from ...parsing import FilePhaseSummary as ParsedFilePhase
 from ...parsing import summarize_file_phases
@@ -43,11 +44,31 @@ from ..support.metadata_filters import MetadataFilters, parse_metadata_filters, 
 from .saved_queries import resolve_saved_query_id_subquery
 
 if TYPE_CHECKING:
+    from ...app.runtime import AppRuntime
     from ...db.repo_types import MetadataFields
+    from ...db.repository import Repository
 
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/metadata", tags=["metadata"])
+
+
+async def _auto_sync_artifacts(
+    metadata: Metadata, repo: "Repository", runtime: "AppRuntime"
+) -> ArtifactSyncResult | None:
+    """保存成功后把 NFO / 封面写回磁盘. 失败只记日志, 不影响已提交的 DB 写入."""
+    try:
+        return await write_metadata_artifacts(
+            repo,
+            metadata,
+            resource_store=runtime.resource_store,
+            web_client=runtime.web_client,
+            config=runtime.config.hot,
+            safe_dirs=runtime.safe_dirs,
+        )
+    except Exception:
+        logger.exception("auto artifact sync failed", metadata_id=metadata.id)
+        return None
 
 
 async def build_metadata_responses(repo: RepoDep, items: Sequence[Metadata]) -> list[MetadataResponse]:
@@ -325,7 +346,9 @@ async def get_metadata(metadata_id: int, repo: RepoDep) -> MetadataDetailRespons
 
 
 @router.patch("/{metadata_id}")
-async def update_metadata(metadata_id: int, req: PartialMetadata, repo: RepoDep) -> MetadataResponse:
+async def update_metadata(
+    metadata_id: int, req: PartialMetadata, repo: RepoDep, runtime: RuntimeDep
+) -> MetadataResponse:
     updates = cast("MetadataFields", {k: v for k, v in req.model_dump().items() if v is not None})
     if not updates:
         raise HTTPException(status_code=422, detail="没有需要修改的字段")
@@ -342,6 +365,7 @@ async def update_metadata(metadata_id: int, req: PartialMetadata, repo: RepoDep)
     if metadata is None:
         raise HTTPException(status_code=404, detail="影片不存在")
     logger.info("metadata updated", metadata_id=metadata_id, fields=list(updates.keys()))
+    await _auto_sync_artifacts(metadata, repo, runtime)
     return to_resp(MetadataResponse, metadata)
 
 
@@ -407,7 +431,32 @@ async def crop_poster_from_thumb(
         rotation=req.rotation,
         poster_url=poster_url,
     )
+    await _auto_sync_artifacts(updated, repo, runtime)
     return to_resp(MetadataResponse, updated)
+
+
+@router.post("/{metadata_id}/sync-artifacts")
+async def sync_artifacts(metadata_id: int, repo: RepoDep, runtime: RuntimeDep) -> dict[str, list[str]]:
+    """手动把当前 NFO / 封面重写到已整理目录 (自动写盘失败或批量补写时使用)."""
+    metadata = await repo.get_metadata(metadata_id)
+    if metadata is None:
+        raise HTTPException(status_code=404, detail="影片不存在")
+    result = await write_metadata_artifacts(
+        repo,
+        metadata,
+        resource_store=runtime.resource_store,
+        web_client=runtime.web_client,
+        config=runtime.config.hot,
+        safe_dirs=runtime.safe_dirs,
+    )
+    logger.info(
+        "artifacts synced",
+        metadata_id=metadata_id,
+        written=len(result.written),
+        skipped=len(result.skipped),
+        errors=len(result.errors),
+    )
+    return result.as_dict()
 
 
 @router.post("/{metadata_id}/merge")
