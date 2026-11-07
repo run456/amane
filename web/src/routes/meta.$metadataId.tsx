@@ -981,7 +981,12 @@ function TitleDetailPage() {
               {data.files.map((f) => (
                 <Group key={f.id} justify="space-between" gap="xs" wrap="nowrap">
                   <Stack gap={4} style={{ minWidth: 0, flex: 1 }}>
-                    <Text size="sm" truncate="end" ff="monospace">
+                    <Text
+                      size="sm"
+                      ff="monospace"
+                      style={{ overflowWrap: "anywhere", wordBreak: "break-all" }}
+                      title={f.path}
+                    >
                       {f.path}
                     </Text>
                     <FilePhaseBadges phase={f} />

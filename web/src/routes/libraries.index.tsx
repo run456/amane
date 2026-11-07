@@ -57,7 +57,13 @@ function LibraryCard({ library, onEdit }: { library: LibraryResponse; onEdit: ()
                 {library.recursive ? t("recursive") : t("nonRecursive")}
               </Badge>
             </Group>
-            <Text size="xs" c="dimmed" ff="monospace" truncate="end">
+            <Text
+              size="xs"
+              c="dimmed"
+              ff="monospace"
+              style={{ overflowWrap: "anywhere", wordBreak: "break-all" }}
+              title={library.path}
+            >
               {library.path}
             </Text>
           </div>

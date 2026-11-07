@@ -119,6 +119,9 @@ const COLUMN_WIDTH: Record<SortableColumn, number | undefined> = {
 
 const CELL_OVERFLOW = { overflow: "hidden", maxWidth: 0 } as const;
 
+/** 路径列完整折行显示; 不能套用 CELL_OVERFLOW 的 maxWidth:0, 否则会被压成逐字换行. */
+const PATH_CELL_STYLE = { overflowWrap: "anywhere", wordBreak: "break-all" } as const;
+
 /**
  * 各列的隐藏断点: 可见列宽之和超出容器时表格横向滚动, 路径列随之移出首屏.
  * 该映射同时决定表头与单元格的显隐, 任一处缺失即列错位.
@@ -470,9 +473,14 @@ export function LibraryMediaTable({
                     </Text>
                   )}
                 </Table.Td>
-                <Table.Td style={CELL_OVERFLOW}>
+                <Table.Td style={PATH_CELL_STYLE}>
                   <Stack gap={4}>
-                    <Text size="sm" ff="monospace" truncate title={rel}>
+                    <Text
+                      size="sm"
+                      ff="monospace"
+                      style={PATH_CELL_STYLE}
+                      title={rel}
+                    >
                       {rel}
                     </Text>
                     <FilePhaseBadges phase={item} />

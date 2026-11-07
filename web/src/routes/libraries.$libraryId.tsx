@@ -228,7 +228,13 @@ function LibraryDetailPage() {
           <Stack gap={4}>
             <BackLink />
             <Title order={2}>{library.name}</Title>
-            <Text size="xs" c="dimmed" ff="monospace" truncate="end">
+            <Text
+              size="xs"
+              c="dimmed"
+              ff="monospace"
+              style={{ overflowWrap: "anywhere", wordBreak: "break-all" }}
+              title={library.path}
+            >
               {library.path}
             </Text>
           </Stack>
