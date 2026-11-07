@@ -1,4 +1,5 @@
 from .actors import (
+    ActorAvatarUploadResponse,
     ActorClearPersonBatchRequest,
     ActorClearPersonBatchResponse,
     ActorGenderBatchRequest,
@@ -7,6 +8,9 @@ from .actors import (
     ActorLocksRequest,
     ActorResponse,
     ActorScrapeRequest,
+    ActorTranslateItem,
+    ActorTranslateRequest,
+    ActorTranslateResponse,
     ActorUpdateRequest,
     ActorUserTagsRequest,
     CropAvatarRequest,
@@ -129,6 +133,7 @@ from .tasks import (
 from .user_tags import UserTagLinksResponse, UserTagResponse
 
 __all__ = [
+    "ActorAvatarUploadResponse",
     "ActorClearPersonBatchRequest",
     "ActorClearPersonBatchResponse",
     "ActorGenderBatchRequest",
@@ -138,6 +143,9 @@ __all__ = [
     "ActorPushSubmission",
     "ActorResponse",
     "ActorScrapeRequest",
+    "ActorTranslateItem",
+    "ActorTranslateRequest",
+    "ActorTranslateResponse",
     "ActorScrapeSubmission",
     "ActorUpdateRequest",
     "ActorUserTagsRequest",
