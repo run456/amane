@@ -336,7 +336,25 @@
     "filmography_other": "Filmography ({{count}})",
     "viewAll": "View all {{count}}",
     "viewAll_one": "View all {{count}}",
-    "viewAll_other": "View all {{count}}"
+    "viewAll_other": "View all {{count}}",
+    "uploadAvatar": {
+      "action": "Upload photo",
+      "success": "Photo updated · {{images}} actor image(s) / {{nfos}} NFO(s) written"
+    },
+    "translateOverview": {
+      "action": "Translate overview",
+      "title": "Translate actor overview",
+      "hint": "Translate the current overview with Lara. Preview only; nothing is saved until you check the box.",
+      "sourceLabel": "Original",
+      "resultLabel": "Translation",
+      "apply": "Replace overview with translation",
+      "applyButton": "Apply",
+      "retry": "Retry",
+      "start": "Start",
+      "success": "Overview updated",
+      "noSelection": "Select a translation to apply first",
+      "characters": "{{chars}} characters used"
+    }
   },
   "notFound": "Film not found",
   "invalidId": "Invalid film ID",

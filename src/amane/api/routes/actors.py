@@ -1,18 +1,26 @@
 """身份治理 (rename/merge/delete/rules) 仍由 /facets/actor 处理."""
 
+import hashlib
+import io
+from pathlib import Path
 from typing import Annotated, cast
 
 import structlog
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from PIL import Image, ImageOps
 
 from ...db.models import Actor, FacetKind, SavedQueryEntity, TaskType
 from ...db.repo_types import ActorBrowseItem, ActorBrowseParams, ActorPersonFields, WriteMode
 from ...handlers import ActorScrapePayload
 from ...media import manual_crop_image
+from ...media.actor_avatar import sync_actor_avatar
+from ...media.lara import LaraClient, LaraError
+from ...media.resource_store import RESOURCE_URL_PREFIX
 from ...utils.dates import normalize_calendar_date
 from ...utils.model import to_resp
 from ..deps import RepoDep, RuntimeDep
 from ..models import (
+    ActorAvatarUploadResponse,
     ActorClearPersonBatchRequest,
     ActorClearPersonBatchResponse,
     ActorGenderBatchRequest,
@@ -21,6 +29,9 @@ from ..models import (
     ActorLocksRequest,
     ActorResponse,
     ActorScrapeRequest,
+    ActorTranslateItem,
+    ActorTranslateRequest,
+    ActorTranslateResponse,
     ActorUpdateRequest,
     ActorUserTagsRequest,
     CropAvatarRequest,
@@ -34,6 +45,9 @@ from .saved_queries import resolve_saved_query_id_subquery
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/actors", tags=["actors"])
+
+_MAX_AVATAR_BYTES = 20 * 1024 * 1024
+_MAX_AVATAR_EDGE = 2400
 
 
 def _from_browse(item: ActorBrowseItem) -> ActorResponse:
@@ -252,3 +266,129 @@ async def scrape_actor(actor_id: int, repo: RepoDep, req: ActorScrapeRequest | N
     )
     logger.info("actor scrape task created", actor_id=actor_id, task_id=task.id)
     return to_resp(TaskResponse, task)
+
+@router.post("/{actor_id}/avatar")
+async def upload_actor_avatar(
+    actor_id: int,
+    file: Annotated[UploadFile, File(description="本地头像图片")],
+    repo: RepoDep,
+    runtime: RuntimeDep,
+) -> ActorAvatarUploadResponse:
+    """上传本地图片作为演员头像, 同时写 .actors/ 图并改写关联影片 NFO.
+
+    Amane 侧: 图片存入 ResourceStore, 作为 image_urls[0] 前插 (保留原图),
+    以 WriteMode.MANUAL 写入并自动锁定 image_urls.
+    磁盘侧: 每个关联影片目录写 ``.actors/<演员名>.jpg`` (Emby/Kodi 读本地演员头像的
+    标准路径), 在 library.write_nfo 开启时重写 NFO; write_nfo() 会自动补
+    ``<actor><thumb>``. 全程只写盘, 不调用 Emby API.
+    """
+    actor = await repo.get_actor(actor_id)
+    if actor is None:
+        raise HTTPException(status_code=404, detail="演员不存在")
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="文件为空")
+    if len(raw) > _MAX_AVATAR_BYTES:
+        raise HTTPException(status_code=413, detail="图片超过 20MB")
+    try:
+        image = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="无法识别该图片") from exc
+    image.thumbnail((_MAX_AVATAR_EDGE, _MAX_AVATAR_EDGE), Image.Resampling.LANCZOS)
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=92, optimize=True)
+    data = buffer.getvalue()
+    digest = hashlib.sha256(data).hexdigest()[:16]
+
+    async def producer(dest: Path) -> bool:
+        dest.write_bytes(data)
+        return True
+
+    resource = await runtime.resource_store.acquire_derived(
+        f"actor-upload:{digest}", "poster", digest, producer, ext=".jpg"
+    )
+    if resource is None:
+        raise HTTPException(status_code=500, detail="头像写入失败")
+    url = f"{RESOURCE_URL_PREFIX}/{runtime.resource_store.url_hash(resource.url)}"
+
+    old_urls = list(actor.image_urls or [])
+    updated = await repo.update_actor(
+        actor_id, mode=WriteMode.MANUAL, image_urls=list(dict.fromkeys([url, *old_urls]))
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="演员不存在")
+
+    sync = await sync_actor_avatar(repo, updated, data)
+    logger.info(
+        "actor avatar uploaded",
+        actor_id=actor_id,
+        bytes=len(data),
+        images=sync.images_written,
+        nfos=sync.nfos_written,
+    )
+    return ActorAvatarUploadResponse(
+        actor=await _detail_response(repo, updated),
+        images_written=sync.images_written,
+        nfos_written=sync.nfos_written,
+        skipped=sync.skipped,
+        errors=sync.errors,
+    )
+
+
+@router.post("/{actor_id}/translate")
+async def translate_actor(
+    actor_id: int,
+    req: ActorTranslateRequest,
+    repo: RepoDep,
+    runtime: RuntimeDep,
+) -> ActorTranslateResponse:
+    """Lara 翻译演员简介/标语: 只返回译文不写库.
+
+    与影片翻译一致: 前端预览后勾选才 PATCH 写回, WriteMode.MANUAL 自动锁定字段,
+    避免一次点击覆盖原文, 也避免免费字符额度被误消耗.
+    """
+    actor = await repo.get_actor(actor_id)
+    if actor is None:
+        raise HTTPException(status_code=404, detail="演员不存在")
+
+    config = runtime.config.hot.lara
+    client = LaraClient(config)
+    if not client.configured:
+        raise HTTPException(
+            status_code=400, detail="尚未配置 Lara Access Key, 请到「设置 → lara」填写"
+        )
+
+    target = (req.target or config.target_language or "zh-CN").strip()
+    source = (req.source or config.source_language or "").strip() or None
+    items: list[ActorTranslateItem] = []
+    characters = 0
+    detected: str | None = None
+    for field in req.fields:
+        text = getattr(actor, field, None)
+        if not isinstance(text, str) or not text.strip():
+            continue
+        try:
+            translation, source_language = await client.translate(
+                text, target=target, source=source
+            )
+        except LaraError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        detected = detected or source_language
+        characters += len(text)
+        items.append(ActorTranslateItem(field=field, source=text, translation=translation))
+
+    if not items:
+        raise HTTPException(status_code=400, detail="简介为空, 没有可翻译的内容")
+    logger.info(
+        "actor translated",
+        actor_id=actor_id,
+        fields=[item.field for item in items],
+        characters=characters,
+    )
+    return ActorTranslateResponse(
+        target_language=target,
+        source_language=detected,
+        characters=characters,
+        items=items,
+    )

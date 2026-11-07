@@ -22,6 +22,7 @@ import {
   IconExternalLink,
   IconFilter,
   IconLock,
+  IconLanguage,
   IconLockOpen,
   IconPencil,
   IconRefresh,
@@ -49,7 +50,9 @@ import type { ActorField, ActorResponse, CacheKind } from "@/client/types.gen";
 import { InfiniteScrollSentinel } from "@/components/common/infinite-scroll-sentinel";
 import { SortMenu } from "@/components/common/sort-menu";
 import { ActorAvatarCropDialog } from "@/components/media/actor-avatar-crop-dialog";
+import { ActorAvatarUploadButton } from "@/components/media/actor-avatar-upload";
 import { ActorEditDialog } from "@/components/media/actor-edit-dialog";
+import { ActorTranslateDialog } from "@/components/media/actor-translate-dialog";
 import { ActorUserTags } from "@/components/media/actor-user-tags";
 import { ClearPersonNotice } from "@/components/media/clear-person-notice";
 import { FanartLightbox } from "@/components/media/fanart-lightbox";
@@ -475,6 +478,7 @@ function ActorHero({
 }) {
   const { t } = useTranslation(["metadata", "common"]);
   const [lightboxOpen, lightbox] = useDisclosure(false);
+  const [translateOpen, setTranslateOpen] = useState(false);
   const imageUrls = actor.image_urls ?? [];
   const primaryImage = imageUrls[0];
   const aliases = actor.aliases ?? [];
@@ -572,6 +576,7 @@ function ActorHero({
             {t("actors.cropAvatar.action")}
           </Button>
         )}
+        <ActorAvatarUploadButton actorId={actor.id} />
         <Box mt="xs">
           <LockChip label={t("actors.imagesEdit")} {...lockProps("image_urls")} />
         </Box>
@@ -675,13 +680,24 @@ function ActorHero({
         )}
         {(actor.overview || lockedFields.has("overview")) && (
           <FieldBlock label={t("browse.person.overview")} lock={lockProps("overview")}>
-            {actor.overview ? (
-              <Text size="sm" style={{ whiteSpace: "pre-wrap" }}>
-                {actor.overview}
-              </Text>
-            ) : (
-              <EmptyValue />
-            )}
+            <Stack gap={6}>
+              {actor.overview ? (
+                <Text size="sm" style={{ whiteSpace: "pre-wrap" }}>
+                  {actor.overview}
+                </Text>
+              ) : (
+                <EmptyValue />
+              )}
+              <Button
+                size="compact-xs"
+                variant="subtle"
+                leftSection={<IconLanguage size={14} />}
+                disabled={!actor.overview}
+                onClick={() => setTranslateOpen(true)}
+              >
+                {t("actors.translateOverview.action")}
+              </Button>
+            </Stack>
           </FieldBlock>
         )}
 
@@ -788,6 +804,11 @@ function ActorHero({
       {lightboxOpen && imageUrls.length > 0 && (
         <FanartLightbox images={imageUrls} initialIndex={0} onClose={lightbox.close} />
       )}
+      <ActorTranslateDialog
+        opened={translateOpen}
+        onClose={() => setTranslateOpen(false)}
+        actorId={actor.id}
+      />
     </Group>
   );
 }

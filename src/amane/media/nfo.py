@@ -35,6 +35,21 @@ def _escape_xml(text: str) -> str:
     return escaped
 
 
+_ACTOR_ILLEGAL_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def actor_avatar_filename(name: str) -> str:
+    """Kodi/Emby ``.actors`` 本地演员头像命名: 空白转下划线, 去掉路径非法字符."""
+    safe = _ACTOR_ILLEGAL_FILENAME.sub("_", name.strip())
+    safe = re.sub(r"\s+", "_", safe).strip("._") or "actor"
+    return f"{safe[:120]}.jpg"
+
+
+def actor_avatar_relative(name: str) -> str:
+    """NFO ``<actor><thumb>`` 写相对路径, 媒体服务器按 NFO 所在目录解析."""
+    return f".actors/{actor_avatar_filename(name)}"
+
+
 async def write_nfo(metadata: Metadata, nfo_path: Path) -> bool:
     try:
         nfo_path.parent.mkdir(parents=True, exist_ok=True)
@@ -72,6 +87,10 @@ async def write_nfo(metadata: Metadata, nfo_path: Path) -> bool:
                 code.write("  <actor>\n")
                 code.write(f"    <name>{_escape_xml(actor)}</name>\n")
                 code.write("    <type>Actor</type>\n")
+                # 只写盘: 影片目录下存在 .actors/<名字>.jpg 才补 thumb, 由上传头像端点放置.
+                # 这样整理 / 保存 / 同步产物等所有写 NFO 的路径都自动带上, 无需逐处传参.
+                if (nfo_path.parent / ".actors" / actor_avatar_filename(actor)).is_file():
+                    code.write(f"    <thumb>{_escape_xml(actor_avatar_relative(actor))}</thumb>\n")
                 code.write("  </actor>\n")
 
         if metadata.score is not None:

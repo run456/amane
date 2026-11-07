@@ -317,7 +317,25 @@
     "removeImage": "删除这张头像",
     "rawSources": "刮削来源快照",
     "rawSourcesHint": "各站原始快照, 只读; 供离线重新聚合",
-    "viewAll": "查看全部 {{count}} 位"
+    "viewAll": "查看全部 {{count}} 位",
+    "uploadAvatar": {
+      "action": "上传头像",
+      "success": "头像已更新 · 写入 {{images}} 张演员图 / {{nfos}} 份 NFO"
+    },
+    "translateOverview": {
+      "action": "翻译简介",
+      "title": "翻译演员简介",
+      "hint": "调用 Lara 翻译当前简介；只预览，勾选后才会写回并锁定该字段。",
+      "sourceLabel": "原文",
+      "resultLabel": "译文",
+      "apply": "用译文覆盖简介",
+      "applyButton": "应用",
+      "retry": "重新翻译",
+      "start": "开始翻译",
+      "success": "简介已更新",
+      "noSelection": "请先勾选要应用的译文",
+      "characters": "本次消耗 {{chars}} 字符"
+    }
   },
   "notFound": "未找到影片",
   "invalidId": "无效的影片 ID",

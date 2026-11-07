@@ -111,6 +111,39 @@ class CropAvatarRequest(CropBoxRequest):
     """从当前主图按像素框裁切头像 (相对 image_urls[0] 当前本地文件像素; 含就地超分后尺寸)."""
 
 
+class ActorTranslateRequest(BaseModel):
+    """按需翻译演员简介/标语: 只返回译文, 不写库 (与影片翻译一致)."""
+
+    fields: list[Literal["overview", "tagline"]] = Field(
+        default_factory=lambda: ["overview"], description="要翻译的字段; 默认只翻简介"
+    )
+    target: str | None = None
+    source: str | None = None
+
+
+class ActorTranslateItem(BaseModel):
+    field: str
+    source: str
+    translation: str
+
+
+class ActorTranslateResponse(BaseModel):
+    target_language: str
+    source_language: str | None = None
+    characters: int = 0
+    items: list[ActorTranslateItem] = Field(default_factory=list)
+
+
+class ActorAvatarUploadResponse(BaseModel):
+    """头像上传结果: 演员详情 + 写盘统计 (images_written/nfos_written)."""
+
+    actor: ActorResponse
+    images_written: int = 0
+    nfos_written: int = 0
+    skipped: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
 if TYPE_CHECKING:
     type ActorUpdateRequest = Actor
 
@@ -124,6 +157,7 @@ ActorUpdateRequest = create_partial_model(
 )
 
 __all__ = [
+    "ActorAvatarUploadResponse",
     "ActorClearPersonBatchRequest",
     "ActorClearPersonBatchResponse",
     "ActorGenderBatchRequest",
@@ -132,5 +166,8 @@ __all__ = [
     "ActorLocksRequest",
     "ActorResponse",
     "ActorScrapeRequest",
+    "ActorTranslateItem",
+    "ActorTranslateRequest",
+    "ActorTranslateResponse",
     "ActorUpdateRequest",
 ]
