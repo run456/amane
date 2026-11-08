@@ -157,6 +157,9 @@ function TitleDetailPage() {
   const [failedTrailerUrl, setFailedTrailerUrl] = useState<string | null>(null);
   const [thumbBroken, setThumbBroken] = useState(false);
   const [posterBroken, setPosterBroken] = useState(false);
+  // 「刷新本地文件」按钮的自增计数: 追加到同源图片 URL 上强制 <img> 重新请求.
+  // 后端注入的 &v= 只在文件变化时变, nonce 保证点下按钮必定重载一次.
+  const [localRefreshNonce, setLocalRefreshNonce] = useState(0);
   // 评论时间戳的跳转: 本地请求负责即时响应 (同一秒连点也要重新触发), 地址栏的 `t` 负责分享与刷新定位.
   const [seekRequest, setSeekRequest] = useState<SeekRequest | null>(null);
   const [canSeek, setCanSeek] = useState(false);
@@ -212,6 +215,19 @@ function TitleDetailPage() {
     void queryClient.invalidateQueries({
       queryKey: getMetadataQueryKey({ path: { metadata_id: id } }),
     });
+  };
+
+  /** 重新读取视频同目录的本地图片.
+   *  后端不写库、每次请求都 discover() 实时扫盘, 所以不必新增扫描接口: 重新拉详情后
+   *  注入的 URL 会带上新的文件版本号, 再加上 nonce, <img> 就会请求盘上最新的文件.
+   *  不触发刮削、不改数据库、不写 NFO. */
+  const refreshLocalArtifacts = () => {
+    setThumbBroken(false);
+    setPosterBroken(false);
+    setLocalRefreshNonce((n) => n + 1);
+    invalidateDetail();
+    void queryClient.invalidateQueries({ queryKey: listMetadataQueryKey() });
+    notifications.show({ message: t("detail.refreshLocal.success"), color: "blue" });
   };
 
   /** 上传本地图片替换封面: 后端会同时更新 poster/thumb 并写盘到库目录. */
@@ -440,6 +456,15 @@ function TitleDetailPage() {
   const coverSrc =
     thumbSrc && !thumbBroken ? thumbSrc : posterSrc && !posterBroken ? posterSrc : null;
   const coverUrl = proxyImageUrl(coverSrc);
+  // 同源本地产物 URL 追加刷新 nonce; 外链 (走 proxy-image) 一律保持原样.
+  // 后端注入的 &v= 承担「文件变了自动换图」, nonce 承担「点按钮必定重载一次」.
+  const withLocalRefresh = (url: string | null | undefined): string | undefined => {
+    if (!url) return undefined;
+    if (!url.startsWith("/api/metadata/") || localRefreshNonce === 0) return url;
+    return `${url}&r=${localRefreshNonce}`;
+  };
+  const coverRenderUrl = withLocalRefresh(coverUrl);
+  const extrafanartSrcs = (item.extrafanart ?? []).map((u) => withLocalRefresh(u) ?? u);
   const coverFailed = Boolean((thumbSrc || posterSrc) && !coverUrl);
   // 取成局部量, 供播放分支在回调里引用 (属性访问的收窄不进闭包).
   const trailerUrl = item.trailer_url ?? null;
@@ -534,8 +559,8 @@ function TitleDetailPage() {
           >
             {coverUrl && (
               <ProxyImage
-                key={coverUrl}
-                src={coverUrl}
+                key={coverRenderUrl}
+                src={coverRenderUrl}
                 alt={playingTrailer ? "" : item.number}
                 referrerPolicy="no-referrer"
                 aria-hidden={playingTrailer}
@@ -691,6 +716,16 @@ function TitleDetailPage() {
                 }
               }}
             />
+            <Tooltip label={t("detail.refreshLocal.hint")}>
+              <Button
+                size="xs"
+                variant="light"
+                leftSection={<IconRefresh size={14} />}
+                onClick={refreshLocalArtifacts}
+              >
+                {t("detail.refreshLocal.action")}
+              </Button>
+            </Tooltip>
             <LockChip label={t("detail.fields.thumb")} {...lockProps("thumb_urls")} />
             <LockChip label={t("detail.fields.poster")} {...lockProps("poster_urls")} />
             <LockChip label={t("detail.fields.trailer")} {...lockProps("trailer_urls")} />
@@ -856,7 +891,7 @@ function TitleDetailPage() {
               label={`${t("detail.fields.extrafanart")} (${item.extrafanart?.length})`}
               lock={lockProps("extrafanart")}
             >
-              <FanartStrip images={item.extrafanart ?? []} />
+              <FanartStrip images={extrafanartSrcs} />
             </FieldBlock>
           )}
 
@@ -1086,7 +1121,10 @@ function TitleDetailPage() {
       )}
 
       {coverLightboxOpen && coverSrc && (
-        <FanartLightbox images={[coverSrc]} onClose={coverLightbox.close} />
+        <FanartLightbox
+          images={[withLocalRefresh(coverSrc) ?? coverSrc]}
+          onClose={coverLightbox.close}
+        />
       )}
     </Stack>
   );

@@ -5,6 +5,8 @@ Amane 原本只把 ``Metadata.poster_urls`` / ``thumb_urls`` / ``trailer_urls`` 
 「本地优先」把同源 URL 插到各 URL 列表首位, 同时补齐单值字段:
 
 - 不写数据库、不触发重扫: 每次请求按当前 ``MediaFile.path`` 现算, 整理后自动跟随.
+- 本地图片 URL 带文件 ``mtime_ns`` 版本号 (``&v=``): 用户替换 / 修改盘上的图后
+  URL 变化, 前端 ``<img>`` 才会重新请求 (固定 URL 会被浏览器与 React key 缓存).
 - 本地缺失的 kind 保持原样, 外链仍在列表里作后备.
 - ``AMANE_LOCAL_ARTIFACTS=0`` 可整体关闭, 退回原版行为.
 """
@@ -41,6 +43,21 @@ def _scan(paths: dict[int, str], numbers: dict[int, str]) -> dict[int, LocalArti
     }
 
 
+def _local_url(metadata_id: int, art: LocalArtifacts, kind: LocalArtifactKind) -> str:
+    """带文件版本号 (mtime_ns) 的同源产物 URL; 图片类专用."""
+    return artifact_url(metadata_id, kind, art.version(kind))
+
+
+def _is_local_artifact(url: str, metadata_id: int, kind: LocalArtifactKind) -> bool:
+    """是否为本条目的同源产物 URL (可能带着上一次扫描的旧 ``&v=`` 参数).
+
+    注入不写库, 但列表可能已含历史同源 URL; 按前缀判断才能把旧版本号一并排除,
+    避免每次刷新都在列表里累积一条同源地址.
+    """
+    base = artifact_url(metadata_id, kind)
+    return url == base or url.startswith(base + "&")
+
+
 def _inject_one(response: MetadataResponse, art: LocalArtifacts) -> MetadataResponse:
     if not art.files:
         return response
@@ -48,18 +65,22 @@ def _inject_one(response: MetadataResponse, art: LocalArtifacts) -> MetadataResp
     metadata_id = response.id
 
     if art.has(LocalArtifactKind.poster):
-        url = artifact_url(metadata_id, LocalArtifactKind.poster)
-        update["poster_urls"] = [url, *[u for u in response.poster_urls if u != url]]
+        url = _local_url(metadata_id, art, LocalArtifactKind.poster)
+        rest = [u for u in response.poster_urls if not _is_local_artifact(u, metadata_id, LocalArtifactKind.poster)]
+        update["poster_urls"] = [url, *rest]
         update["poster_url"] = url
     if art.has(LocalArtifactKind.thumb):
-        url = artifact_url(metadata_id, LocalArtifactKind.thumb)
-        update["thumb_urls"] = [url, *[u for u in response.thumb_urls if u != url]]
+        url = _local_url(metadata_id, art, LocalArtifactKind.thumb)
+        rest = [u for u in response.thumb_urls if not _is_local_artifact(u, metadata_id, LocalArtifactKind.thumb)]
+        update["thumb_urls"] = [url, *rest]
         update["thumb_url"] = url
     if art.has(LocalArtifactKind.fanart):
         # 背景图: 放进剧照列表首位, 让详情页灯箱能看到本地 fanart.
-        url = artifact_url(metadata_id, LocalArtifactKind.fanart)
-        update["extrafanart"] = [url, *[u for u in response.extrafanart if u != url]]
+        url = _local_url(metadata_id, art, LocalArtifactKind.fanart)
+        rest = [u for u in response.extrafanart if not _is_local_artifact(u, metadata_id, LocalArtifactKind.fanart)]
+        update["extrafanart"] = [url, *rest]
     if art.has(LocalArtifactKind.trailer) or pick_proxyable_trailer(response.trailer_urls) is not None:
+        # 预告片 URL 不挂版本号: 播放器按 /api/metadata/ 前缀判定 kind, 保持原样最稳.
         url = artifact_url(metadata_id, LocalArtifactKind.trailer)
         update["trailer_urls"] = [url, *[u for u in response.trailer_urls if u != url]]
         update["trailer_url"] = url

@@ -191,6 +191,11 @@
       "failed": "封面更新失败",
       "tooLarge": "图片超过 20MB"
     },
+    "refreshLocal": {
+      "action": "刷新本地文件",
+      "success": "已重新读取本地文件",
+      "hint": "重新扫描视频同目录的图片与预告片，不刮削、不写 NFO"
+    },
     "playbackCopyTimestamp": "复制时间戳",
     "playbackCopyLink": "复制当前时间的链接",
     "playbackCopied": "已复制到剪贴板",

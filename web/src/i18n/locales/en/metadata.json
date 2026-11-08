@@ -194,6 +194,11 @@
       "failed": "Failed to update cover",
       "tooLarge": "Image exceeds 20MB"
     },
+    "refreshLocal": {
+      "action": "Refresh local files",
+      "success": "Local files reloaded",
+      "hint": "Re-scan images and trailer next to the video; no scraping, no NFO writes"
+    },
     "playbackCopyTimestamp": "Copy timestamp",
     "playbackCopyLink": "Copy link to current time",
     "playbackCopied": "Copied to clipboard",

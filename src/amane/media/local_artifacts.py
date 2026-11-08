@@ -16,7 +16,7 @@ Amane 原本只从 ``Metadata.poster_urls`` / ``thumb_urls`` / ``trailer_urls`` 
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -56,14 +56,23 @@ _PREFIX_SUFFIX: dict[LocalArtifactKind, str] = {
 
 @dataclass(frozen=True)
 class LocalArtifacts:
-    """一次目录扫描的结果: kind -> 磁盘路径."""
+    """一次目录扫描的结果: kind -> 磁盘路径.
+
+    ``versions`` 记录命中文件的 ``mtime_ns``: 注入同源 URL 时作为 ``&v=`` 参数,
+    用户替换 / 修改本地图片后 URL 随之变化, 前端 ``<img>`` 才会重新请求,
+    否则固定 URL 会被浏览器与 React key 缓存, 改了盘上的图也看不到.
+    """
 
     files: dict[LocalArtifactKind, Path]
     directory: Path | None = None
     stems: tuple[str, ...] = ()
+    versions: dict[LocalArtifactKind, str] = field(default_factory=dict)
 
     def has(self, kind: LocalArtifactKind) -> bool:
         return kind in self.files
+
+    def version(self, kind: LocalArtifactKind) -> str | None:
+        return self.versions.get(kind)
 
 
 def _candidate_names(kind: LocalArtifactKind, stems: Sequence[str]) -> list[str]:
@@ -125,6 +134,7 @@ def discover(video_path: Path, *, number: str | None = None) -> LocalArtifacts:
     )
 
     found: dict[LocalArtifactKind, Path] = {}
+    versions: dict[LocalArtifactKind, str] = {}
     for kind in LocalArtifactKind:
         exts = _VIDEO_EXTS if kind is LocalArtifactKind.trailer else _IMAGE_EXTS
         hit = _first_match(entries, kind, stems, exts)
@@ -132,7 +142,12 @@ def discover(video_path: Path, *, number: str | None = None) -> LocalArtifacts:
             hit = _first_match(trailer_entries, kind, stems, exts)
         if hit is not None:
             found[kind] = hit
-    return LocalArtifacts(files=found, directory=directory, stems=stems)
+            try:
+                # 与扫描同一线程内 stat, 避免在响应装配里阻塞事件循环.
+                versions[kind] = str(hit.stat().st_mtime_ns)
+            except OSError:
+                pass
+    return LocalArtifacts(files=found, directory=directory, stems=stems, versions=versions)
 
 
 def _first_match(
@@ -150,9 +165,17 @@ def _first_match(
     return None
 
 
-def artifact_url(metadata_id: int, kind: LocalArtifactKind) -> str:
-    """同源产物 URL; 相对路径不经过图片代理, 浏览器直接请求本服务."""
-    return f"/api/metadata/{metadata_id}/artifact?kind={kind.value}"
+def artifact_url(
+    metadata_id: int, kind: LocalArtifactKind, version: str | None = None
+) -> str:
+    """同源产物 URL; 相对路径不经过图片代理, 浏览器直接请求本服务.
+
+    ``version`` 取磁盘文件的 ``mtime_ns``: 文件被替换 / 修改后 URL 变化, 前端
+    ``<img>`` 的 src / key 随之变化才会重新请求, 从而加载到最新文件. 文件没变时
+    URL 保持稳定, 不会触发无谓重载. 端点忽略多余 query 参数, 无需改路由签名.
+    """
+    url = f"/api/metadata/{metadata_id}/artifact?kind={kind.value}"
+    return f"{url}&v={version}" if version else url
 
 
 def pick_proxyable_trailer(urls: Sequence[str]) -> str | None:
