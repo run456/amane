@@ -10,7 +10,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from ...enums import ActorGender
 from ...utils.collections import unique_ids
-from ..models import Actor, ActorAlias, ActorSortField, ActorUserTag, MetadataActor, SortOrder
+from ..models import Actor, ActorAlias, ActorSortField, ActorUserTag, Metadata, MetadataActor, SortOrder
 from ..repo_types import ActorBrowseItem, ActorBrowseParams
 
 
@@ -86,14 +86,27 @@ def _append_comparable_range(
         filters.append(column <= max_v)
 
 
+def _live_metadata_ids():
+    """现存条目的 id 集合 (排除关联表中指向已删条目的残留行)."""
+    return select(col(Metadata.id))
+
+
+def _linked_actor_ids():
+    """至少关联一部现存影片的演员 id; 非关联子查询, 不与列表的 OUTER JOIN 冲突."""
+    return select(col(MetadataActor.actor_id)).where(
+        col(MetadataActor.metadata_id).in_(_live_metadata_ids())
+    )
+
+
 def _build_browse_filters(
     params: ActorBrowseParams, *, id_subquery_sql: str | None = None
 ) -> list[ColumnElement[bool]]:
     filters: list[ColumnElement[bool]] = []
     # 只列出至少关联一部影片的演员; 无关联者隐藏 (演员行本身保留, 便于重新挂盘后复用资料).
-    filters.append(
-        select(MetadataActor.metadata_id).where(col(MetadataActor.actor_id) == col(Actor.id)).exists()
-    )
+    # 必须用非关联 IN 子查询: 列表查询会 OUTER JOIN metadata_actors, 关联 EXISTS 会被
+    # SQLAlchemy 自动关联掉整张 FROM, 编译期报 "no FROM clauses due to auto-correlation",
+    # 正是升级后 GET /api/actors 返回 500 的原因. IN 同时排除关联表里的残留行.
+    filters.append(col(Actor.id).in_(_linked_actor_ids()))
     if params.ids is not None:
         id_list = unique_ids(params.ids)
         if not id_list:
@@ -157,9 +170,16 @@ async def browse_actors(
     total = (await session.exec(select(count()).select_from(base.subquery()))).one() or 0
 
     count_expr = count(col(MetadataActor.metadata_id))
+    # 计数口径与可见性一致: 只统计仍存在的条目, 孤儿关联不计入影片数.
     stmt = (
         select(Actor, count_expr)
-        .outerjoin(MetadataActor, col(MetadataActor.actor_id) == col(Actor.id))
+        .outerjoin(
+            MetadataActor,
+            and_(
+                col(MetadataActor.actor_id) == col(Actor.id),
+                col(MetadataActor.metadata_id).in_(_live_metadata_ids()),
+            ),
+        )
         .group_by(col(Actor.id))
         .order_by(_actor_primary_order(params.sort_by, params.order, count_expr=count_expr), col(Actor.id).asc())
         .offset(params.offset)
