@@ -14,6 +14,7 @@ CORS / 防盗链 / Referer 校验挡掉, 表现为「预告片无法播放」. �
 from __future__ import annotations
 
 import mimetypes
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlsplit
@@ -34,7 +35,15 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
-_EGRESS = EgressPolicy()
+_ALLOW_PRIVATE = os.getenv("AMANE_TRAILER_PROXY_ALLOW_PRIVATE", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+"""默认禁止私网/内网地址出站 (防 SSRF). 设为 1 时允许代理内网 Emby/Jellyfin 的预告片直链:
+同源代理本就只把上游字节转发给浏览器, 风险可控, 但请确认 ``trailer_urls`` 不会被第三方数据注入私网地址."""
+_EGRESS = EgressPolicy(allow_private=_ALLOW_PRIVATE)
 _NO_CACHE = {"Cache-Control": "private, no-cache"}
 _PASSTHROUGH = frozenset(
     {

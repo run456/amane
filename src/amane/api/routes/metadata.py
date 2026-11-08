@@ -358,9 +358,20 @@ async def get_metadata_artifact(
         local = art.files.get(kind)
         if local is not None:
             return local_video_response(request, local)
-        remote = pick_proxyable_trailer(metadata.trailer_urls)
-        if remote is not None:
-            return await proxy_remote_trailer(request, remote)
+        # 本地无预告片: 遍历 trailer_urls 里所有可代理的直链, 单个失效 (502/400) 自动跳下一个,
+        # 全部失败才返回 404, 避免一条死链就让播放器拿不到地址而崩溃.
+        candidates = [u for u in metadata.trailer_urls if pick_proxyable_trailer([u]) is not None]
+        for url in candidates:
+            try:
+                return await proxy_remote_trailer(request, url)
+            except HTTPException as exc:
+                logger.warning(
+                    "trailer proxy failed, trying next",
+                    metadata_id=metadata_id,
+                    url=url,
+                    status=exc.status_code,
+                    detail=exc.detail,
+                )
         raise HTTPException(status_code=404, detail="无可播放的预告片")
 
     local = art.files.get(kind)
