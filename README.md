@@ -1,5 +1,5 @@
 > [!IMPORTANT]
-> 本仓库是基于 [sqzw-x/amane](https://github.com/sqzw-x/amane) 的**个人定制分支**，非官方版本。当前镜像：`ghcr.io/run456/amane:0.26.12-custom`（linux/amd64 + linux/arm64）。
+> 本仓库是基于 [sqzw-x/amane](https://github.com/sqzw-x/amane) 的**个人定制分支**，非官方版本。当前镜像：`ghcr.io/run456/amane:0.26.13-custom`（linux/amd64 + linux/arm64）。
 
 ## 更新说明（相对原版）
 
@@ -10,12 +10,12 @@
 - **浏览与展示**：本地海报、剧照、预告片优先 · 预告片支持 `影片/trailers/trailer.mp4` 子目录与远程地址容错 · 片库按媒体库筛选 · 长路径完整换行显示 · 无关联影片的演员自动隐藏
 - **演员页**：头像自定义上传（同步写入 `.actors` 头像与 NFO）· 演员简介翻译
 - **批量与辅助**：分类标签多选批量删除 · 侧栏显示自定义版本号，便于确认镜像是否更新
-- **稳定性修复**：容器启动崩溃、预告片接口 502
+- **稳定性修复**：容器启动崩溃、预告片接口 502、演员列表接口 500
 
-**部署**：Docker 只需把 compose 里的 `image:` 改成 `ghcr.io/run456/amane:0.26.12-custom` 后重启，原有配置与 `data/` 完全保留；回退改回旧版本号即可。
+**部署**：Docker 只需把 compose 里的 `image:` 改成 `ghcr.io/run456/amane:0.26.13-custom` 后重启，原有配置与 `data/` 完全保留；回退改回旧版本号即可。
 
 > [!WARNING]
-> `0.26.12` 的「删库清理」是真实删除，会一并清除标签、评论、用户标签等数据且**不可逆**，升级前请先备份 `data/amane.db`。磁盘上的 NFO、海报、`trailer.mp4` 不受影响。
+> `0.26.13` 的「删库清理」是真实删除，会一并清除标签、评论、用户标签等数据且**不可逆**，升级前请先备份 `data/amane.db`。磁盘上的 NFO、海报、`trailer.mp4` 不受影响。
 
 ---
 
