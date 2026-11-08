@@ -609,6 +609,37 @@ class MetadataRepoMixin(RepositoryMixinBase):
         await self._drop_embeddings(removed)
         return len(removed), missing
 
+    async def purge_orphan_metadata(self, candidate_metadata_ids: Collection[int | None] | None = None) -> int:
+        """删除已无任何 ``MediaFile`` 引用的条目, 让影片墙随删库 / 移除硬盘收敛.
+
+        一个 Metadata 可被多块盘、多个库的文件共同引用, 因此只清"确实没有残留挂载文件"的条目,
+        不能按"本次删了哪些库"去删. 传 ``candidate_metadata_ids`` 时仅检查这批 id (删文件后调用),
+        传 ``None`` 为全量收敛 (启动清理历史残留用).
+
+        级联与向量索引清理复用 ``cascade_delete_metadata`` / ``_drop_embeddings``,
+        与手动删除条目完全一致; 幂等, 无孤儿时返回 0.
+        """
+        ids = (
+            None
+            if candidate_metadata_ids is None
+            else unique_ids([i for i in candidate_metadata_ids if i is not None])
+        )
+        if ids is not None and not ids:
+            return 0
+        async with self._session() as session:
+            stmt = select(Metadata).where(_metadata_has_files_clause(has_files=False))
+            if ids is not None:
+                stmt = stmt.where(col(Metadata.id).in_(ids))
+            orphans = list((await session.exec(stmt)).all())
+            if not orphans:
+                return 0
+            orphan_ids = [m.id for m in orphans if m.id is not None]
+            for metadata in orphans:
+                await cascade_delete_metadata(session, metadata)
+            await session.commit()
+        await self._drop_embeddings(orphan_ids)
+        return len(orphan_ids)
+
     async def _drop_embeddings(self, metadata_ids: list[int]) -> None:
         """主库提交之后清除 sidecar: 跨库没有事务, 先删除向量会在主库回滚时丢弃仍有效的数据.
         清理失败只留下孤儿行: 检索侧回查主库时会将其过滤, 下次全量索引再删除, 因此仅记录日志."""

@@ -90,6 +90,10 @@ def _build_browse_filters(
     params: ActorBrowseParams, *, id_subquery_sql: str | None = None
 ) -> list[ColumnElement[bool]]:
     filters: list[ColumnElement[bool]] = []
+    # 只列出至少关联一部影片的演员; 无关联者隐藏 (演员行本身保留, 便于重新挂盘后复用资料).
+    filters.append(
+        select(MetadataActor.metadata_id).where(col(MetadataActor.actor_id) == col(Actor.id)).exists()
+    )
     if params.ids is not None:
         id_list = unique_ids(params.ids)
         if not id_list:

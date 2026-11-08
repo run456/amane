@@ -159,7 +159,10 @@ class LibrariesRepoMixin(RepositoryMixinBase):
         return best
 
     async def delete_library(self, library_id: int) -> int:
-        """须同时删除归属 MediaFile, 否则留下悬空非空 FK. 返回被级联删除的文件数."""
+        """须同时删除归属 MediaFile, 否则留下悬空非空 FK. 返回被级联删除的文件数.
+
+        删完再收敛孤儿 Metadata: 仅删「已无任何挂载文件」的条目, 仍被其它库/硬盘引用的保留.
+        """
         async with self._session() as session:
             lib = await session.get(Library, library_id)
             if lib is None:
@@ -167,13 +170,15 @@ class LibrariesRepoMixin(RepositoryMixinBase):
             stmt = select(MediaFile).where(MediaFile.library_id == library_id)
             result = await session.exec(stmt)
             media_files = list(result.all())
+            linked = [mf.metadata_id for mf in media_files if mf.metadata_id is not None]
             for mf in media_files:
                 await session.delete(mf)
             # 未声明 ORM relationship, UoW 不会排序删除顺序; 须先 flush 子表.
             await session.flush()
             await session.delete(lib)
             await session.commit()
-            return len(media_files)
+        await self.purge_orphan_metadata(linked)
+        return len(media_files)
 
     async def update_library(self, library_id: int, **updates: Unpack[LibraryUpdates]) -> Library | None:
         async with self._session() as session:

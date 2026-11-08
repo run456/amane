@@ -66,7 +66,7 @@ wheels = [
 
 [[package]]
 name = "amane"
-version = "0.26.11"
+version = "0.26.12"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },

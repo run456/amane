@@ -221,9 +221,13 @@ class MediaRepoMixin(RepositoryMixinBase):
             media = await session.get(MediaFile, media_id)
             if media is None:
                 return False
+            metadata_id = media.metadata_id
             await session.delete(media)
             await session.commit()
-            return True
+        # 该文件若是某条目的最后一份挂载, 条目随之收敛 (多盘共用时其它文件仍在, 不误删).
+        if metadata_id is not None:
+            await self.purge_orphan_metadata([metadata_id])
+        return True
 
     async def batch_delete_media_files(self, media_ids: Sequence[int]) -> tuple[int, int]:
         """按 id 批量删除记录, 返回 ``(删除数, 不存在的 id 数)``; 整个批次只提交一次."""
@@ -231,11 +235,18 @@ class MediaRepoMixin(RepositoryMixinBase):
         if not ids:
             return 0, 0
         deleted = 0
+        linked: list[int | None] = []
         async with self._session() as session:
+            # 先收集关联条目 id, 供删后一次性收敛; chunk 与删除同批, 避开 SQLite 参数上限.
+            for chunk in chunks(ids):
+                linked.extend(
+                    (await session.exec(select(col(MediaFile.metadata_id)).where(col(MediaFile.id).in_(chunk)))).all()
+                )
             for chunk in chunks(ids):
                 result = await session.exec(sqla_delete(MediaFile).where(col(MediaFile.id).in_(chunk)))
                 deleted += result.rowcount or 0
             await session.commit()
+        await self.purge_orphan_metadata(linked)
         return deleted, len(ids) - deleted
 
     async def count_media_by_metadata_ids(self, metadata_ids: Sequence[int]) -> dict[int, int]:

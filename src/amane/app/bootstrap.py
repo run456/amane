@@ -133,6 +133,15 @@ async def start_app(config: ConfigManager | None = None) -> AppSession:
     embeddings = EmbeddingStore(cold.data_dir / "embeddings.db")
     repo = Repository(engine, embeddings=embeddings)
 
+    # 启动时收敛历史残留: 清掉删库 / 移除硬盘遗留的、已无任何挂载文件的条目.
+    # worker 与 watcher 尚未启动, 不与入库任务竞争; 失败只记日志, 不阻断启动.
+    try:
+        purged = await repo.purge_orphan_metadata()
+        if purged:
+            logger.info("orphan metadata purged at startup", count=purged)
+    except Exception:
+        logger.warning("orphan metadata purge failed at startup", exc_info=True)
+
     # 会话级只读引擎, 不纳入 Alembic; dsn 变更经 _rebuild() 重建
     r18_db = build_r18_db(hot.r18)
     if r18_db is not None:
