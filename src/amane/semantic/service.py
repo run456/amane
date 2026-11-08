@@ -2,7 +2,7 @@
 
 向量按 ``(条目, 模型, 图片)`` 保存在 sidecar 库 (见 :class:`amane.db.embeddings.EmbeddingStore`),
 检索时整表装入内存做一次点积. 封面与剧照共用同一个视觉塔与同一次点积, 结果以 ``kind`` 区分来源;
-图片只读取已写入磁盘的 Resource.
+图片只读取已写入磁盘的 Resource; 外链剧照全失效时回退影片目录 ``extrafanart/`` 的本地图.
 
 索引常驻, 生命周期随服务实例而非最后一次查询. 提交成功后写入代次递增, 旧索引继续服务, 后台串行重装,
 装载完成后原子替换; 删除条目则在写入返回前就地清除位图, 无须等待重装. 一次查询的图片分数与条目排名按
@@ -33,6 +33,7 @@ from ..db.embeddings import (
     EmbeddingWriteEvent,
     ModelRef,
 )
+from ..media.local_artifacts import list_local_extrafanart
 from .encoder import (
     ImageEncoder,
     SemanticUnavailable,
@@ -970,15 +971,17 @@ class SemanticService:
     async def _resolve_images(self, metadata: Metadata) -> list[_Image]:
         """封面优先; 剧照取优先级最高且已有磁盘图片的站点 (同 ``ResourceStore.acquire_extrafanart``).
 
-        无封面则整个条目跳过.
+        外链剧照一张都没落地 (失效 / 未下载) 时回退影片目录 ``extrafanart/`` 的本地图,
+        让这批条目仍有剧照向量, 不再被死链拖空. 无封面则整个条目跳过.
         """
         cover = await self._resolve_cover(metadata)
         if cover is None:
             return []
         images = [cover]
         seen = {cover.content_hash or cover.url}
+        stills: list[_Image] = []
         for urls in metadata.extrafanart_urls.values():
-            stills: list[_Image] = []
+            site_stills: list[_Image] = []
             for url in urls:
                 found = await self._resolve_resource(url)
                 if found is None:
@@ -988,11 +991,50 @@ class SemanticService:
                 if digest in seen:
                     continue
                 seen.add(digest)
-                stills.append(_Image(EmbeddingKind.STILL, resource.url, path, resource.content_hash))
-            if stills:
-                images.extend(stills)
+                site_stills.append(_Image(EmbeddingKind.STILL, resource.url, path, resource.content_hash))
+            if site_stills:
+                stills = site_stills
                 break
+        if not stills:
+            stills = await self._resolve_local_stills(metadata, seen)
+        images.extend(stills)
         return images
+
+    async def _resolve_local_stills(self, metadata: Metadata, seen: set[str]) -> list[_Image]:
+        """外链剧照全失效时的本地兜底; 纯读盘, 不写资源库、不发起对外请求.
+
+        ``content_hash`` 用 size + mtime 生成: 盘上图被替换会触发向量重算, 与
+        ``_changed()`` 的 ``(kind, content_hash)`` 比较口径一致.
+        """
+        if metadata.id is None:
+            return []
+        try:
+            paths = await self.repo.first_media_paths([metadata.id])
+        except Exception:  # noqa: BLE001 - 索引构建不应因单个挂载点异常中断
+            return []
+        video_path = paths.get(metadata.id)
+        if video_path is None:
+            return []
+        files = await asyncio.to_thread(list_local_extrafanart, video_path)
+        out: list[_Image] = []
+        for i, path in enumerate(files):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            digest = f"local:{path}:{stat.st_size}:{stat.st_mtime_ns}"
+            if digest in seen:
+                continue
+            seen.add(digest)
+            out.append(
+                _Image(
+                    EmbeddingKind.STILL,
+                    f"/api/metadata/{metadata.id}/extrafanart/{i}",
+                    path,
+                    digest,
+                )
+            )
+        return out
 
     async def _resolve_cover(self, metadata: Metadata) -> _Image | None:
         """海报优先, 缩略图作为回退; 只接受已写入磁盘的 Resource."""

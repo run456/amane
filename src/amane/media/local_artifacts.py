@@ -9,6 +9,8 @@ Amane 原本只从 ``Metadata.poster_urls`` / ``thumb_urls`` / ``trailer_urls`` 
 - 预告片子目录 (Emby / Jellyfin 官方约定): ``<影片目录>/trailers/trailer.mp4`` /
   ``<影片目录>/trailers/<片名>-trailer.mp4``. 同目录未命中时回退到此子目录,
   优先级低于同目录 (用户同目录已放 trailer.mp4 时不再读子目录).
+- 剧照图集子目录 (Emby / Kodi 约定): ``<影片目录>/extrafanart/*.jpg``,
+  回退 ``extrathumbs/``; 按自然序返回全部图片, 供详情页图集本地优先.
 
 本模块一次 ``iterdir`` 建索引, 按优先级匹配两种命名, 让响应层可以注入同源 URL:
 不写数据库、不需要重新扫描, 整理后文件挪了位置也自动跟随 (端点按当前 MediaFile.path 定位).
@@ -16,6 +18,7 @@ Amane 原本只从 ``Metadata.poster_urls`` / ``thumb_urls`` / ``trailer_urls`` 
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -34,6 +37,12 @@ class LocalArtifactKind(StrEnum):
 
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 _VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".mov")
+
+_EF_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
+"""剧照图集只收 ``api/support/media_type.py`` 能识别为图片的后缀 (不含 bmp)."""
+
+_EF_DIRNAMES = ("extrafanart", "extrathumbs")
+"""Emby / Kodi 剧照图集目录, 与 ``handlers/file.py::_LOCAL_EXTRAFANART_DIRS`` 保持一致."""
 
 _PROXYABLE_SCHEMES = ("http://", "https://")
 """只有可代理的 http(s) 直链才改走服务端转发; HLS 播放列表交给前端 hls.js."""
@@ -67,6 +76,10 @@ class LocalArtifacts:
     directory: Path | None = None
     stems: tuple[str, ...] = ()
     versions: dict[LocalArtifactKind, str] = field(default_factory=dict)
+    extrafanart: tuple[Path, ...] = ()
+    """影片目录下 extrafanart/ (extrathumbs/) 里的剧照, 自然序."""
+    extrafanart_version: str | None = None
+    """图集目录内容指纹; 增删 / 改名 / 改字节都会变, 供 ``&v=`` 触发前端重载."""
 
     def has(self, kind: LocalArtifactKind) -> bool:
         return kind in self.files
@@ -147,7 +160,15 @@ def discover(video_path: Path, *, number: str | None = None) -> LocalArtifacts:
                 versions[kind] = str(hit.stat().st_mtime_ns)
             except OSError:
                 pass
-    return LocalArtifacts(files=found, directory=directory, stems=stems, versions=versions)
+    ef = list_local_extrafanart(video_path)
+    return LocalArtifacts(
+        files=found,
+        directory=directory,
+        stems=stems,
+        versions=versions,
+        extrafanart=tuple(ef),
+        extrafanart_version=_extrafanart_version(ef) if ef else None,
+    )
 
 
 def _first_match(
@@ -176,6 +197,55 @@ def artifact_url(
     """
     url = f"/api/metadata/{metadata_id}/artifact?kind={kind.value}"
     return f"{url}&v={version}" if version else url
+
+
+def _natural_key(path: Path) -> tuple[int, str]:
+    """自然序: ``1.jpg < 2.jpg < 10.jpg``; 无数字的名称排在前面且按字母稳定."""
+    stem = path.stem
+    digits = "".join(c for c in stem if c.isdigit())
+    return (int(digits) if digits else 0, stem.casefold())
+
+
+def list_local_extrafanart(media_path: str | Path) -> list[Path]:
+    """影片同目录下 ``extrafanart/`` (回退 ``extrathumbs/``) 内的剧照, 自然序.
+
+    只按固定目录名扫描, 不接受任何用户提供的路径; 目录不可读时返回空列表,
+    不影响封面等其它产物的注入. Amane 整理 / 刮削写盘时本来就会把剧照下载到
+    ``extrafanart/1.jpg`` ``2.jpg`` …, 这里让详情页能直接读到它们.
+    """
+    directory = Path(media_path).parent
+    for dirname in _EF_DIRNAMES:
+        extra = directory / dirname
+        if not extra.is_dir():
+            continue
+        try:
+            files = [
+                f for f in extra.iterdir()
+                if f.is_file() and f.suffix.lower() in _EF_IMAGE_EXTS
+            ]
+        except OSError:
+            return []
+        return sorted(files, key=_natural_key)
+    return []
+
+
+def _extrafanart_version(files: Sequence[Path]) -> str:
+    """图集目录指纹: 任意一张被替换 / 增删 / 改名都会变, 让 ``<img>`` 重新请求."""
+    digest = hashlib.sha1()
+    for f in files:
+        try:
+            stat = f.stat()
+            digest.update(f"{f.name}:{stat.st_size}:{stat.st_mtime_ns};".encode())
+        except OSError:
+            digest.update(f"{f.name};".encode())
+    return digest.hexdigest()[:16]
+
+
+def extrafanart_url(metadata_id: int, index: int, version: str | None = None) -> str:
+    """本地剧照同源 URL. 必须带 ``?`` 参数: 详情页 ``withLocalRefresh()`` 会追加 ``&r=<nonce>``,
+    「刷新本地文件」按钮才能顺带重载图集; 否则会拼出非法路径.
+    """
+    return f"/api/metadata/{metadata_id}/extrafanart/{index}?v={version or '0'}"
 
 
 def pick_proxyable_trailer(urls: Sequence[str]) -> str | None:

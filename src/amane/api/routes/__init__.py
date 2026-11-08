@@ -8,6 +8,7 @@ from .cleanup import router as cleanup_router
 from .comments import router as comments_router
 from .config import router as config_router
 from .facets import router as facets_router
+from .extrafanart import router as extrafanart_router
 from .feeds import router as feeds_router
 from .files import router as files_router
 from .health import router as health_router
@@ -37,6 +38,7 @@ router.include_router(cleanup_router)
 router.include_router(files_router)
 router.include_router(media_router)
 router.include_router(metadata_router)
+router.include_router(extrafanart_router)
 router.include_router(network_router)
 router.include_router(playback_router)
 router.include_router(plugins_router)

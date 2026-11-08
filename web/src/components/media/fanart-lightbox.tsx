@@ -36,6 +36,7 @@ export function FanartLightbox({ images, initialIndex = 0, onClose }: FanartLigh
   );
   const [loading, setLoading] = useState(true);
   const [resolution, setResolution] = useState<{ w: number; h: number } | null>(null);
+  const [brokenSrc, setBrokenSrc] = useState<string | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
 
   // 触屏滑动切换: 起手点与"这次滑动已经切换过"的时刻. 横向拖动不算页面的滚动手势, 浏览器随后仍可能补一次
@@ -82,6 +83,7 @@ export function FanartLightbox({ images, initialIndex = 0, onClose }: FanartLigh
     setSeenSrc(queuedSrc);
     setLoading(true);
     setResolution(null);
+    setBrokenSrc(null);
   }
 
   // 缓存命中在 layout 阶段同步完成 (勿在 ref 回调里 setState).
@@ -214,8 +216,9 @@ export function FanartLightbox({ images, initialIndex = 0, onClose }: FanartLigh
           <img
             ref={imgRef}
             key={queuedSrc}
-            src={queuedSrc ?? undefined}
-            alt={`fanart-${index}`}
+            // 加载失败时撤掉 src: 不留破图图标, alt 置空不留 "fanart-N" 文字残影.
+            src={brokenSrc === queuedSrc ? undefined : queuedSrc ?? undefined}
+            alt=""
             referrerPolicy="no-referrer"
             style={{
               maxHeight: "calc(var(--amane-vh) * 0.9)",
@@ -238,6 +241,7 @@ export function FanartLightbox({ images, initialIndex = 0, onClose }: FanartLigh
             }}
             onError={() => {
               release();
+              setBrokenSrc(queuedSrc);
               setResolution(null);
               setLoading(false);
             }}
@@ -268,12 +272,21 @@ export function FanartStrip({
 }: ThumbStripProps) {
   const [opened, { open, close }] = useDisclosure(false);
   const [start, setStart] = useState(0);
+  const [failed, setFailed] = useState<Set<string>>(() => new Set());
 
-  if (images.length === 0) return empty;
+  // URL 变了 (切换条目 / 点「刷新本地文件」换 &r= nonce) 就清空失败记录, 让新地址重试.
+  // 用 join 后的字符串作依赖, 避免父组件每次 render 生成新数组导致反复重置.
+  const imagesKey = images.join("\u0000");
+  useEffect(() => {
+    setFailed(new Set());
+  }, [imagesKey]);
 
-  const limit = maxVisible ?? images.length;
-  const shown = images.slice(0, limit);
-  const rest = images.length - shown.length;
+  const visible = images.filter((url) => !failed.has(url));
+  if (visible.length === 0) return empty;
+
+  const limit = maxVisible ?? visible.length;
+  const shown = visible.slice(0, limit);
+  const rest = visible.length - shown.length;
   const size: CSSProperties = {
     width: 96,
     height: 64,
@@ -316,10 +329,11 @@ export function FanartStrip({
           >
             <ProxyImage
               src={proxyImageUrl(url) ?? url}
-              alt={`thumb-${i}`}
+              alt=""
               referrerPolicy="no-referrer"
               style={size}
               placeholder={<span style={size} aria-hidden />}
+              onError={() => setFailed((prev) => new Set(prev).add(url))}
             />
           </Box>
         ))}
@@ -343,7 +357,7 @@ export function FanartStrip({
           </Box>
         )}
       </Group>
-      {opened && <FanartLightbox images={images} initialIndex={start} onClose={close} />}
+      {opened && <FanartLightbox images={visible} initialIndex={start} onClose={close} />}
     </>
   );
 }

@@ -8,6 +8,8 @@ Amane 原本只把 ``Metadata.poster_urls`` / ``thumb_urls`` / ``trailer_urls`` 
 - 本地图片 URL 带文件 ``mtime_ns`` 版本号 (``&v=``): 用户替换 / 修改盘上的图后
   URL 变化, 前端 ``<img>`` 才会重新请求 (固定 URL 会被浏览器与 React key 缓存).
 - 本地缺失的 kind 保持原样, 外链仍在列表里作后备.
+- 影片目录下 ``extrafanart/`` (``extrathumbs/``) 里的整组剧照优先于单张 fanart 与远程
+  ``extrafanart_urls``: 有本地图集就只返回本地图, 没有才回退原列表 (方案 A).
 - ``AMANE_LOCAL_ARTIFACTS=0`` 可整体关闭, 退回原版行为.
 """
 
@@ -24,6 +26,7 @@ from ...media.local_artifacts import (
     LocalArtifacts,
     artifact_url,
     discover,
+    extrafanart_url,
     pick_proxyable_trailer,
 )
 from ..models import MetadataResponse
@@ -58,8 +61,14 @@ def _is_local_artifact(url: str, metadata_id: int, kind: LocalArtifactKind) -> b
     return url == base or url.startswith(base + "&")
 
 
+def _is_local_extrafanart(url: str, metadata_id: int) -> bool:
+    """历史注入的同源剧照 URL (可能带旧 ``&v=`` / ``&r=``); 图集清空时一并剔除."""
+    return url.startswith(f"/api/metadata/{metadata_id}/extrafanart/")
+
+
 def _inject_one(response: MetadataResponse, art: LocalArtifacts) -> MetadataResponse:
-    if not art.files:
+    # 只有 extrafanart/ 子目录、没有任何单张图片时也要注入图集, 不能提前返回.
+    if not art.files and not art.extrafanart:
         return response
     update: dict[str, object] = {}
     metadata_id = response.id
@@ -74,11 +83,25 @@ def _inject_one(response: MetadataResponse, art: LocalArtifacts) -> MetadataResp
         rest = [u for u in response.thumb_urls if not _is_local_artifact(u, metadata_id, LocalArtifactKind.thumb)]
         update["thumb_urls"] = [url, *rest]
         update["thumb_url"] = url
-    if art.has(LocalArtifactKind.fanart):
-        # 背景图: 放进剧照列表首位, 让详情页灯箱能看到本地 fanart.
-        url = _local_url(metadata_id, art, LocalArtifactKind.fanart)
-        rest = [u for u in response.extrafanart if not _is_local_artifact(u, metadata_id, LocalArtifactKind.fanart)]
-        update["extrafanart"] = [url, *rest]
+    if art.extrafanart:
+        # 本地图集齐全: 只返回本地图, 不再拼远程外链. 本地剧照往往就是那批外链下载下来的,
+        # 拼一起会重复, 且外链多已失效 -> 破图; 用户要的是「有本地就别再碰外链」.
+        # URL 带目录指纹 &v=, 增删 / 替换任意一张都会让 <img> 重新请求.
+        update["extrafanart"] = [
+            extrafanart_url(metadata_id, i, art.extrafanart_version)
+            for i in range(len(art.extrafanart))
+        ]
+    else:
+        # 无本地图集: 剔除历史注入的同源 URL (含旧图集与单张 fanart), 保留远程外链;
+        # 单张 fanart.jpg 仍置首位. 用户清空 extrafanart/ 目录后不会残留坏掉的本地地址.
+        rest = [
+            u for u in response.extrafanart
+            if not _is_local_extrafanart(u, metadata_id)
+            and not _is_local_artifact(u, metadata_id, LocalArtifactKind.fanart)
+        ]
+        if art.has(LocalArtifactKind.fanart):
+            rest = [_local_url(metadata_id, art, LocalArtifactKind.fanart), *rest]
+        update["extrafanart"] = rest
     if art.has(LocalArtifactKind.trailer) or pick_proxyable_trailer(response.trailer_urls) is not None:
         # 预告片 URL 不挂版本号: 播放器按 /api/metadata/ 前缀判定 kind, 保持原样最稳.
         url = artifact_url(metadata_id, LocalArtifactKind.trailer)

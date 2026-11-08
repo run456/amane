@@ -197,7 +197,7 @@
     "refreshLocal": {
       "action": "Refresh local files",
       "success": "Local files reloaded",
-      "hint": "Re-scan images and trailer next to the video; no scraping, no NFO writes"
+      "hint": "Re-scan images, the local extrafanart folder, and trailer next to the video; no scraping, no NFO writes"
     },
     "playbackCopyTimestamp": "Copy timestamp",
     "playbackCopyLink": "Copy link to current time",
