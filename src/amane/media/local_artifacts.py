@@ -6,6 +6,9 @@ Amane 原本只从 ``Metadata.poster_urls`` / ``thumb_urls`` / ``trailer_urls`` 
 - 目录级 (一个文件夹一部片): ``poster.jpg`` / ``fanart.jpg`` / ``thumb.jpg`` / ``trailer.mp4``
 - 影片名前缀 (同目录多部片): ``<片名>-poster.jpg`` / ``<片名>-fanart.jpg`` /
   ``<片名>-thumb.jpg`` / ``<片名>-trailer.mp4``
+- 预告片子目录 (Emby / Jellyfin 官方约定): ``<影片目录>/trailers/trailer.mp4`` /
+  ``<影片目录>/trailers/<片名>-trailer.mp4``. 同目录未命中时回退到此子目录,
+  优先级低于同目录 (用户同目录已放 trailer.mp4 时不再读子目录).
 
 本模块一次 ``iterdir`` 建索引, 按优先级匹配两种命名, 让响应层可以注入同源 URL:
 不写数据库、不需要重新扫描, 整理后文件挪了位置也自动跟随 (端点按当前 MediaFile.path 定位).
@@ -101,6 +104,10 @@ def discover(video_path: Path, *, number: str | None = None) -> LocalArtifacts:
     """扫描视频所在目录一次, 返回命中的本地产物 (同步, 由调用方放进线程池).
 
     目录不可读时返回空结果, 不抛异常: 列表页不应因某个挂载点失效而整体报错.
+
+    预告片额外支持 Emby / Jellyfin 官方的 ``<影片目录>/trailers/`` 子目录约定:
+    同目录未命中时回退到该子目录里的 ``trailer.*`` / ``<片名>-trailer.*`` /
+    ``<片名>-preview.*``. 同目录优先级高于子目录, 用户若同时放了两种也不重复.
     """
     directory = video_path.parent
     stems = tuple(_stems_for(video_path, number))
@@ -109,19 +116,38 @@ def discover(video_path: Path, *, number: str | None = None) -> LocalArtifacts:
     except OSError:
         return LocalArtifacts(files={}, directory=directory, stems=stems)
 
+    # Emby / Jellyfin 本地预告片子目录: 仅在 trailer 类回退时使用, 所以单独建索引,
+    # 既不污染图片类的同目录匹配, 也避免在每一轮循环里重复探测子目录是否存在.
+    trailer_dir = directory / "trailers"
+    trailer_entries = (
+        {p.name.lower(): p for p in trailer_dir.iterdir() if p.is_file()}
+        if trailer_dir.is_dir() else {}
+    )
+
     found: dict[LocalArtifactKind, Path] = {}
     for kind in LocalArtifactKind:
         exts = _VIDEO_EXTS if kind is LocalArtifactKind.trailer else _IMAGE_EXTS
-        for name in _candidate_names(kind, stems):
-            hit: Path | None = None
-            for ext in exts:
-                hit = entries.get((name + ext).lower())
-                if hit is not None:
-                    break
-            if hit is not None:
-                found[kind] = hit
-                break
+        hit = _first_match(entries, kind, stems, exts)
+        if hit is None and kind is LocalArtifactKind.trailer and trailer_entries:
+            hit = _first_match(trailer_entries, kind, stems, exts)
+        if hit is not None:
+            found[kind] = hit
     return LocalArtifacts(files=found, directory=directory, stems=stems)
+
+
+def _first_match(
+    entries: dict[str, Path],
+    kind: LocalArtifactKind,
+    stems: Sequence[str],
+    exts: Sequence[str],
+) -> Path | None:
+    """在给定索引里按候选名 + 扩展名匹配第一个命中."""
+    for name in _candidate_names(kind, stems):
+        for ext in exts:
+            hit = entries.get((name + ext).lower())
+            if hit is not None:
+                return hit
+    return None
 
 
 def artifact_url(metadata_id: int, kind: LocalArtifactKind) -> str:
